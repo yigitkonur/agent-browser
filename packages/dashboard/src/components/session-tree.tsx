@@ -68,6 +68,7 @@ const SUPPORTED_ENGINES = ["chrome", "lightpanda", "firefox", "obscura"] as cons
 const BROWSER_OPTIONS: { id: string; label: string; engine?: string; provider?: string }[] = [
   { id: "chrome", label: "Chrome", engine: "chrome" },
   { id: "lightpanda", label: "Lightpanda", engine: "lightpanda" },
+  { id: "firefox", label: "Firefox", engine: "firefox" },
   { id: "agentcore", label: "AgentCore", provider: "agentcore" },
   { id: "browserbase", label: "Browserbase", provider: "browserbase" },
   { id: "browserless", label: "Browserless", provider: "browserless" },
