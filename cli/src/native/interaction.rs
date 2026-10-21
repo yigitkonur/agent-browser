@@ -152,9 +152,12 @@ pub async fn hover(
     Ok((x + offset.0, y + offset.1))
 }
 
-const FOCUS_JS: &str = "function() { this.focus(); }";
+pub(crate) const FOCUS_JS: &str = "function() { this.focus(); }";
 
-const CLEAR_INPUT_JS: &str = r#"function() {
+/// Resolves `this`'s href against the document base, or null for a non-link.
+pub(crate) const CLICK_HREF_JS: &str = "function() { var h = this.getAttribute('href'); if (!h) return null; try { return new URL(h, document.baseURI).toString(); } catch(e) { return null; } }";
+
+pub(crate) const CLEAR_INPUT_JS: &str = r#"function() {
                     this.select && this.select();
                     this.value = '';
                     this.dispatchEvent(new Event('input', { bubbles: true }));
@@ -221,7 +224,7 @@ pub async fn fill(
     Ok(())
 }
 
-const CLEAR_INPUT_TYPING_JS: &str = r#"function() {
+pub(crate) const CLEAR_INPUT_TYPING_JS: &str = r#"function() {
                         this.select && this.select();
                         this.value = '';
                         this.dispatchEvent(new Event('input', { bubbles: true }));
@@ -414,7 +417,7 @@ pub async fn press_key_with_modifiers(
     Ok(())
 }
 
-const SCROLL_BY_JS: &str = "function(dx, dy) { this.scrollBy(dx, dy); }";
+pub(crate) const SCROLL_BY_JS: &str = "function(dx, dy) { this.scrollBy(dx, dy); }";
 
 pub async fn scroll(
     client: &CdpClient,
@@ -468,7 +471,7 @@ pub async fn scroll(
     Ok(())
 }
 
-const SELECT_OPTION_JS: &str = r#"function(vals) {
+pub(crate) const SELECT_OPTION_JS: &str = r#"function(vals) {
             const normalize = (value) => String(value ?? '')
                 .replace(/[\u200B\u200C\u200D\u2060\uFEFF]/g, '')
                 .replace(/\s+/g, ' ')
@@ -664,7 +667,7 @@ pub async fn uncheck(
     Ok(position)
 }
 
-const CLICK_CHECKBOX_JS: &str = r#"function() {
+pub(crate) const CLICK_CHECKBOX_JS: &str = r#"function() {
             var el = this;
             var tag = el.tagName && el.tagName.toUpperCase();
             // 1. Native input — click it directly
@@ -765,7 +768,7 @@ pub async fn focus(
     Ok(())
 }
 
-const CLEAR_VALUE_JS: &str = r#"function() {
+pub(crate) const CLEAR_VALUE_JS: &str = r#"function() {
                     this.focus();
                     this.value = '';
                     this.dispatchEvent(new Event('input', { bubbles: true }));
@@ -805,7 +808,7 @@ pub async fn clear(
     Ok(())
 }
 
-const SELECT_ALL_JS: &str = r#"function() {
+pub(crate) const SELECT_ALL_JS: &str = r#"function() {
                     this.focus();
                     if (typeof this.select === 'function') {
                         this.select();
@@ -851,7 +854,7 @@ pub async fn select_all(
     Ok(())
 }
 
-const SCROLL_INTO_VIEW_JS: &str =
+pub(crate) const SCROLL_INTO_VIEW_JS: &str =
     "function() { this.scrollIntoView({ block: 'center', inline: 'center' }); }";
 
 pub async fn scroll_into_view(
@@ -887,6 +890,18 @@ pub async fn scroll_into_view(
     Ok(())
 }
 
+/// The page JS that dispatches `event_type` with `event_init` on `this`.
+pub(crate) fn dispatch_event_js(event_type: &str, event_init: Option<&Value>) -> String {
+    let init_json = event_init
+        .map(|v| serde_json::to_string(v).unwrap_or("{}".to_string()))
+        .unwrap_or_else(|| "{ bubbles: true }".to_string());
+    format!(
+        "function() {{ this.dispatchEvent(new Event({}, {})); }}",
+        serde_json::to_string(event_type).unwrap_or_default(),
+        init_json
+    )
+}
+
 pub async fn dispatch_event(
     client: &CdpClient,
     session_id: &str,
@@ -905,15 +920,7 @@ pub async fn dispatch_event(
     )
     .await?;
 
-    let init_json = event_init
-        .map(|v| serde_json::to_string(v).unwrap_or("{}".to_string()))
-        .unwrap_or_else(|| "{ bubbles: true }".to_string());
-
-    let js = format!(
-        "function() {{ this.dispatchEvent(new Event({}, {})); }}",
-        serde_json::to_string(event_type).unwrap_or_default(),
-        init_json
-    );
+    let js = dispatch_event_js(event_type, event_init);
 
     client
         .send_command_typed::<_, Value>(
@@ -932,7 +939,7 @@ pub async fn dispatch_event(
     Ok(())
 }
 
-const HIGHLIGHT_JS: &str = r#"function() {
+pub(crate) const HIGHLIGHT_JS: &str = r#"function() {
                     this.style.outline = '2px solid red';
                     this.style.outlineOffset = '2px';
                     const el = this;

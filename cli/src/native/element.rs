@@ -970,7 +970,7 @@ fn build_find_element_js_in(root: &str, selector: &str) -> String {
 }
 
 /// Build a JS expression that counts matching DOM elements by CSS selector or XPath.
-fn build_count_elements_js(selector: &str) -> String {
+pub(crate) fn build_count_elements_js(selector: &str) -> String {
     if let Some(xpath) = selector.strip_prefix("xpath=") {
         format!(
             "document.evaluate({}, document, null, XPathResult.ORDERED_NODE_SNAPSHOT_TYPE, null).snapshotLength",
@@ -1103,14 +1103,14 @@ async fn resolve_by_selector(
     }
 }
 
-fn intercepted_error(target: &str, blocker: &str) -> String {
+pub(crate) fn intercepted_error(target: &str, blocker: &str) -> String {
     format!(
         "Element '{}' is covered by <{}> at its click point, so the input would land on that element instead. Dismiss or interact with the covering element first (it is often a dialog, banner, or sticky header).",
         target, blocker
     )
 }
 
-fn not_actionable_error(target: &str, reason: &str) -> String {
+pub(crate) fn not_actionable_error(target: &str, reason: &str) -> String {
     format!(
         "Element '{}' is {}, so the click would not reach it",
         target, reason
@@ -1128,7 +1128,8 @@ fn box_model_center(model: &BoxModel) -> (f64, f64) {
     }
 }
 
-const ELEMENT_TEXT_JS: &str = "function() { return this.innerText || this.textContent || ''; }";
+pub(crate) const ELEMENT_TEXT_JS: &str =
+    "function() { return this.innerText || this.textContent || ''; }";
 
 pub async fn get_element_text(
     client: &CdpClient,
@@ -1204,7 +1205,7 @@ pub async fn get_element_attribute(
     Ok(result.result.value.unwrap_or(Value::Null))
 }
 
-const ELEMENT_VISIBLE_JS: &str = r#"function() {
+pub(crate) const ELEMENT_VISIBLE_JS: &str = r#"function() {
                     const rect = this.getBoundingClientRect();
                     const style = window.getComputedStyle(this);
                     return rect.width > 0 && rect.height > 0 &&
@@ -1250,7 +1251,7 @@ pub async fn is_element_visible(
         .unwrap_or(false))
 }
 
-const ELEMENT_ENABLED_JS: &str =
+pub(crate) const ELEMENT_ENABLED_JS: &str =
     "function() { return !this.disabled && !(this.matches && this.matches(':disabled')); }";
 
 pub async fn is_element_enabled(
@@ -1290,7 +1291,7 @@ pub async fn is_element_enabled(
         .unwrap_or(true))
 }
 
-const ELEMENT_CHECKED_JS: &str = r#"function() {
+pub(crate) const ELEMENT_CHECKED_JS: &str = r#"function() {
                     var el = this;
                     // Native checkbox/radio input
                     var tag = el.tagName && el.tagName.toUpperCase();
@@ -1362,7 +1363,7 @@ pub async fn is_element_checked(
         .unwrap_or(false))
 }
 
-const ELEMENT_INNER_TEXT_JS: &str = "function() { return this.innerText || ''; }";
+pub(crate) const ELEMENT_INNER_TEXT_JS: &str = "function() { return this.innerText || ''; }";
 
 pub async fn get_element_inner_text(
     client: &CdpClient,
@@ -1401,7 +1402,7 @@ pub async fn get_element_inner_text(
         .unwrap_or_default())
 }
 
-const ELEMENT_INNER_HTML_JS: &str = "function() { return this.innerHTML || ''; }";
+pub(crate) const ELEMENT_INNER_HTML_JS: &str = "function() { return this.innerHTML || ''; }";
 
 pub async fn get_element_inner_html(
     client: &CdpClient,
@@ -1440,7 +1441,7 @@ pub async fn get_element_inner_html(
         .unwrap_or_default())
 }
 
-const ELEMENT_INPUT_VALUE_JS: &str =
+pub(crate) const ELEMENT_INPUT_VALUE_JS: &str =
     "function() { return typeof this.value === 'string' ? this.value : ''; }";
 
 pub async fn get_element_input_value(
@@ -1519,7 +1520,7 @@ pub async fn set_element_value(
     Ok(())
 }
 
-const ELEMENT_BOUNDING_BOX_JS: &str = r#"function() {
+pub(crate) const ELEMENT_BOUNDING_BOX_JS: &str = r#"function() {
                     const r = this.getBoundingClientRect();
                     return { x: r.x, y: r.y, width: r.width, height: r.height };
                 }"#;
@@ -1582,7 +1583,7 @@ pub async fn get_element_count(
     Ok(result.result.value.and_then(|v| v.as_i64()).unwrap_or(0))
 }
 
-const ELEMENT_STYLES_ALL_JS: &str = r#"function() {
+pub(crate) const ELEMENT_STYLES_ALL_JS: &str = r#"function() {
                     const s = window.getComputedStyle(this);
                     const result = {};
                     for (let i = 0; i < s.length; i++) {

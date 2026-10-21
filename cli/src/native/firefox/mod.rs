@@ -4,9 +4,12 @@
 pub mod actions;
 pub mod bidi;
 pub mod capture;
+pub mod forms;
 pub mod input;
+pub mod interact;
 pub mod page;
 pub mod process;
+pub mod query;
 pub mod rdp;
 pub mod session;
 pub mod snapshot;

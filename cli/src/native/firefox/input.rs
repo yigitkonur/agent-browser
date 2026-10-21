@@ -39,6 +39,18 @@ pub(crate) fn key_chord_actions(chord: &str) -> Value {
     key_source(actions)
 }
 
+/// Build the BiDi actions for one key event (`keyDown` or `keyUp`) of `key`.
+pub(crate) fn key_event_actions(event_type: &str, key: &str) -> Value {
+    let (key_name, _, _) = named_key_info(key);
+    let action_type = match event_type {
+        "keyUp" => "keyUp",
+        _ => "keyDown",
+    };
+    key_source(vec![
+        json!({ "type": action_type, "value": key_value(&key_name) }),
+    ])
+}
+
 /// Build the BiDi actions for a click, repeating the pair for the click count.
 pub(crate) fn pointer_click(origin: &Origin, button: &str, click_count: u32) -> Value {
     let button = mouse_button(button);
@@ -107,6 +119,28 @@ pub(crate) fn pointer_drag(from: &Origin, to: &Origin) -> Value {
     )
 }
 
+/// Build the BiDi actions for dragging between two points, emitting `steps` intermediate moves.
+pub(crate) fn pointer_drag_path(from: &Origin, to: &Origin, steps: u32) -> Value {
+    let (fx, fy, _) = origin_json(from);
+    let (tx, ty, _) = origin_json(to);
+    let steps = steps.max(1);
+    let mut actions = vec![
+        pointer_move(from),
+        json!({ "type": "pointerDown", "button": mouse_button("left") }),
+    ];
+    for i in 1..=steps {
+        let t = f64::from(i) / f64::from(steps);
+        actions.push(json!({
+            "type": "pointerMove",
+            "x": fx + (tx - fx) * t,
+            "y": fy + (ty - fy) * t,
+            "origin": "viewport",
+        }));
+    }
+    actions.push(json!({ "type": "pointerUp", "button": mouse_button("left") }));
+    pointer_source("mouse", actions)
+}
+
 /// Build the BiDi actions for a touch tap.
 pub(crate) fn touch_tap(origin: &Origin) -> Value {
     pointer_source(
@@ -130,6 +164,53 @@ pub(crate) fn touch_swipe(from: &Origin, to: &Origin) -> Value {
             json!({ "type": "pointerUp", "button": 0 }),
         ],
     )
+}
+
+/// Build the BiDi actions for a touch swipe with intermediate moves toward `to`.
+pub(crate) fn touch_swipe_path(from: &Origin, to: &Origin, steps: u32) -> Value {
+    let (fx, fy, _) = origin_json(from);
+    let (tx, ty, _) = origin_json(to);
+    let steps = steps.max(1);
+    let mut actions = vec![
+        pointer_move(from),
+        json!({ "type": "pointerDown", "button": 0 }),
+    ];
+    for i in 1..=steps {
+        let t = f64::from(i) / f64::from(steps);
+        actions.push(json!({
+            "type": "pointerMove",
+            "x": fx + (tx - fx) * t,
+            "y": fy + (ty - fy) * t,
+            "origin": "viewport",
+        }));
+    }
+    actions.push(json!({ "type": "pointerUp", "button": 0 }));
+    pointer_source("touch", actions)
+}
+
+/// Build the BiDi actions for one raw touch event over `points`.
+pub(crate) fn touch_event(event_type: &str, points: &[(f64, f64)]) -> Value {
+    let sources: Vec<Value> = points
+        .iter()
+        .enumerate()
+        .map(|(index, (x, y))| {
+            let move_to = json!({ "type": "pointerMove", "x": x, "y": y, "origin": "viewport" });
+            let actions = match event_type {
+                "touchStart" => vec![move_to, json!({ "type": "pointerDown", "button": 0 })],
+                "touchMove" => vec![move_to],
+                "touchEnd" => vec![json!({ "type": "pointerUp", "button": 0 })],
+                "touchCancel" => vec![json!({ "type": "pointerCancel", "button": 0 })],
+                _ => Vec::new(),
+            };
+            json!({
+                "type": "pointer",
+                "id": format!("finger{index}"),
+                "parameters": { "pointerType": "touch" },
+                "actions": actions,
+            })
+        })
+        .collect();
+    Value::Array(sources)
 }
 
 fn key_source(actions: Vec<Value>) -> Value {
@@ -170,6 +251,13 @@ fn mouse_button(button: &str) -> u8 {
 }
 
 fn key_value(key_name: &str) -> String {
+    match key_name.to_ascii_lowercase().as_str() {
+        "shift" => return "\u{E008}".to_string(),
+        "control" => return "\u{E009}".to_string(),
+        "alt" => return "\u{E00A}".to_string(),
+        "meta" => return "\u{E03D}".to_string(),
+        _ => {}
+    }
     match key_name {
         "Enter" => "\u{E007}".to_string(),
         "Tab" => "\u{E004}".to_string(),
@@ -293,6 +381,30 @@ mod tests {
         let ups = steps.iter().filter(|s| s["type"] == "pointerUp").count();
 
         assert_eq!((downs, ups), (2, 2));
+    }
+
+    #[test]
+    fn single_key_event_uses_webdriver_code_points_and_the_requested_direction() {
+        let down = key_event_actions("keyDown", "Enter");
+        assert_eq!(
+            steps(&down),
+            &[json!({"type": "keyDown", "value": "\u{E007}"})]
+        );
+
+        let up = key_event_actions("keyUp", "Tab");
+        assert_eq!(steps(&up), &[json!({"type": "keyUp", "value": "\u{E004}"})]);
+
+        let printable = key_event_actions("keyDown", "a");
+        assert_eq!(
+            steps(&printable),
+            &[json!({"type": "keyDown", "value": "a"})]
+        );
+
+        let modifier = key_event_actions("keyDown", "Shift");
+        assert_eq!(
+            steps(&modifier),
+            &[json!({"type": "keyDown", "value": "\u{E008}"})]
+        );
     }
 
     #[test]

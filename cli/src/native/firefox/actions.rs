@@ -3,7 +3,7 @@
 use serde_json::Value;
 
 use super::session::FirefoxSession;
-use super::{capture, page, snapshot, storage, tabs};
+use super::{capture, forms, interact, page, query, snapshot, storage, tabs};
 use crate::native::actions::{self as chrome, DaemonState};
 
 /// Actions that run on Firefox.
@@ -37,6 +37,63 @@ pub const SUPPORTED_ACTIONS: &[&str] = &[
     "pdf",
     "snapshot",
     "diff_snapshot",
+    "click",
+    "dblclick",
+    "hover",
+    "focus",
+    "tap",
+    "swipe",
+    "drag",
+    "mouse",
+    "mousemove",
+    "mousedown",
+    "mouseup",
+    "wheel",
+    "input_mouse",
+    "input_touch",
+    "scroll",
+    "scrollintoview",
+    "highlight",
+    "dispatch",
+    "dialog",
+    "fill",
+    "type",
+    "press",
+    "keydown",
+    "keyup",
+    "keyboard",
+    "input_keyboard",
+    "inserttext",
+    "clear",
+    "selectall",
+    "select",
+    "check",
+    "uncheck",
+    "setvalue",
+    "upload",
+    "gettext",
+    "getattribute",
+    "innertext",
+    "innerhtml",
+    "inputvalue",
+    "count",
+    "boundingbox",
+    "styles",
+    "isvisible",
+    "isenabled",
+    "ischecked",
+    "find",
+    "frame",
+    "mainframe",
+    "getbyrole",
+    "getbytext",
+    "getbylabel",
+    "getbyplaceholder",
+    "getbyalttext",
+    "getbytitle",
+    "getbytestid",
+    "nth",
+    "evalhandle",
     "close",
     "confirm",
     "deny",
@@ -147,6 +204,63 @@ pub async fn execute(action: &str, cmd: &Value, state: &mut DaemonState) -> Resu
         "pdf" => capture::pdf(cmd, state).await,
         "snapshot" => Box::pin(snapshot::snapshot(cmd, state)).await,
         "diff_snapshot" => Box::pin(snapshot::diff_snapshot(cmd, state)).await,
+        "click" => interact::click(cmd, state).await,
+        "dblclick" => interact::dblclick(cmd, state).await,
+        "hover" => interact::hover(cmd, state).await,
+        "focus" => interact::focus(cmd, state).await,
+        "tap" => interact::tap(cmd, state).await,
+        "swipe" => interact::swipe(cmd, state).await,
+        "drag" => interact::drag(cmd, state).await,
+        "mouse" => interact::mouse(cmd, state).await,
+        "mousemove" => interact::mousemove(cmd, state).await,
+        "mousedown" => interact::mousedown(cmd, state).await,
+        "mouseup" => interact::mouseup(cmd, state).await,
+        "wheel" => interact::wheel(cmd, state).await,
+        "input_mouse" => interact::input_mouse(cmd, state).await,
+        "input_touch" => interact::input_touch(cmd, state).await,
+        "scroll" => interact::scroll(cmd, state).await,
+        "scrollintoview" => interact::scrollintoview(cmd, state).await,
+        "highlight" => interact::highlight(cmd, state).await,
+        "dispatch" => interact::dispatch(cmd, state).await,
+        "dialog" => interact::dialog(cmd, state).await,
+        "fill" => forms::fill(cmd, state).await,
+        "type" => forms::type_text(cmd, state).await,
+        "press" => forms::press(cmd, state).await,
+        "keydown" => forms::keydown(cmd, state).await,
+        "keyup" => forms::keyup(cmd, state).await,
+        "keyboard" => forms::keyboard(cmd, state).await,
+        "input_keyboard" => forms::input_keyboard(cmd, state).await,
+        "inserttext" => forms::inserttext(cmd, state).await,
+        "clear" => forms::clear(cmd, state).await,
+        "selectall" => forms::selectall(cmd, state).await,
+        "select" => forms::select(cmd, state).await,
+        "check" => forms::check(cmd, state).await,
+        "uncheck" => forms::uncheck(cmd, state).await,
+        "setvalue" => forms::setvalue(cmd, state).await,
+        "upload" => forms::upload(cmd, state).await,
+        "gettext" => query::gettext(cmd, state).await,
+        "getattribute" => query::getattribute(cmd, state).await,
+        "innertext" => query::innertext(cmd, state).await,
+        "innerhtml" => query::innerhtml(cmd, state).await,
+        "inputvalue" => query::inputvalue(cmd, state).await,
+        "count" => query::count(cmd, state).await,
+        "boundingbox" => query::boundingbox(cmd, state).await,
+        "styles" => query::styles(cmd, state).await,
+        "isvisible" => query::isvisible(cmd, state).await,
+        "isenabled" => query::isenabled(cmd, state).await,
+        "ischecked" => query::ischecked(cmd, state).await,
+        "find" => query::find(cmd, state).await,
+        "frame" => query::frame(cmd, state).await,
+        "mainframe" => query::mainframe(state).await,
+        "getbyrole" => query::getbyrole(cmd, state).await,
+        "getbytext" => query::getbytext(cmd, state).await,
+        "getbylabel" => query::getbylabel(cmd, state).await,
+        "getbyplaceholder" => query::getbyplaceholder(cmd, state).await,
+        "getbyalttext" => query::getbyalttext(cmd, state).await,
+        "getbytitle" => query::getbytitle(cmd, state).await,
+        "getbytestid" => query::getbytestid(cmd, state).await,
+        "nth" => query::nth(cmd, state).await,
+        "evalhandle" => query::evalhandle(cmd, state).await,
         "close" => chrome::handle_close(state).await,
         "confirm" => chrome::handle_confirm(cmd, state).await,
         _ => chrome::handle_deny(cmd, state).await,
@@ -176,9 +290,52 @@ mod tests {
             let e = execute(action, &json!({}), &mut state).await.unwrap_err();
             assert!(e.contains(action) && e.contains("Chrome-only"), "{e}");
         }
-        let e = execute("click", &json!({}), &mut state).await.unwrap_err();
-        assert_eq!(e, "`click` is not supported on Firefox");
+        let e = execute("vitals", &json!({}), &mut state).await.unwrap_err();
+        assert_eq!(e, "`vitals` is not supported on Firefox");
         assert!(state.firefox.is_none());
+    }
+
+    #[tokio::test]
+    async fn query_actions_are_routed_to_the_query_handlers() {
+        let mut state = DaemonState::new();
+        for action in [
+            "gettext",
+            "getattribute",
+            "innertext",
+            "innerhtml",
+            "inputvalue",
+            "count",
+            "boundingbox",
+            "styles",
+            "isvisible",
+            "isenabled",
+            "ischecked",
+            "find",
+            "frame",
+            "nth",
+            "getbyrole",
+            "getbytext",
+            "getbylabel",
+            "getbyplaceholder",
+            "getbyalttext",
+            "getbytitle",
+            "getbytestid",
+        ] {
+            assert!(handles(action), "{action}");
+            let error = execute(action, &json!({}), &mut state).await.unwrap_err();
+            assert!(
+                error.starts_with("Missing '"),
+                "{action} did not reach its query handler: {error}"
+            );
+        }
+        let error = execute("mainframe", &json!({}), &mut state)
+            .await
+            .unwrap_err();
+        assert_eq!(error, "Browser not launched");
+        let error = execute("evalhandle", &json!({}), &mut state)
+            .await
+            .unwrap_err();
+        assert_eq!(error, "Missing 'script' parameter");
     }
 
     #[tokio::test]

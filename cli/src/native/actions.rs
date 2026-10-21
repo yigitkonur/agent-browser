@@ -6706,7 +6706,7 @@ async fn handle_click(cmd: &Value, state: &mut DaemonState) -> Result<Value, Str
         .await?;
         let call_params = json!({
             "objectId": object_id,
-            "functionDeclaration": "function() { var h = this.getAttribute('href'); if (!h) return null; try { return new URL(h, document.baseURI).toString(); } catch(e) { return null; } }",
+            "functionDeclaration": interaction::CLICK_HREF_JS,
             "returnByValue": true
         });
         let call_result = mgr
@@ -10644,7 +10644,7 @@ async fn execute_subaction(
     }
 }
 
-fn build_role_selector(role: &str, name: Option<&str>, exact: bool) -> String {
+pub(crate) fn build_role_selector(role: &str, name: Option<&str>, exact: bool) -> String {
     match name {
         Some(n) => {
             let exact_str = if exact { ", exact: true" } else { "" };
@@ -19556,7 +19556,7 @@ mod firefox_routing_tests {
         let error = resp["error"].as_str().unwrap();
         assert!(error.contains("`trace_start` is Chrome-only"), "{error}");
         assert!(!error.contains("WebDriver backend"), "{error}");
-        let resp = execute_command(&json!({"id":"2","action":"click"}), &mut state).await;
+        let resp = execute_command(&json!({"id":"2","action":"vitals"}), &mut state).await;
         assert!(resp["error"]
             .as_str()
             .unwrap()

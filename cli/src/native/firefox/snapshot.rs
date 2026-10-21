@@ -300,7 +300,7 @@ pub async fn take_snapshot(
     options: &SnapshotOptions,
     ref_map: &mut RefMap,
 ) -> Result<String, String> {
-    let context = ff.context.clone();
+    let context = ff.top_context.clone();
     ff.bidi
         .send("browsingContext.activate", json!({"context": context}))
         .await?;
@@ -370,7 +370,7 @@ pub async fn snapshot(cmd: &Value, state: &mut DaemonState) -> Result<Value, Str
     state.ref_map.begin_snapshot();
     let tree = Box::pin(take_snapshot(ff, &options, &mut state.ref_map)).await?;
     let url = ff.url().await.unwrap_or_default();
-    let session_id = ff.context.clone();
+    let session_id = ff.top_context.clone();
     chrome::snapshot_response(cmd, state, session_id, &options, previous_refs, tree, url)
 }
 
