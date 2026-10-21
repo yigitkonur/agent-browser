@@ -8,5 +8,6 @@ pub mod page;
 pub mod process;
 pub mod rdp;
 pub mod session;
+pub mod snapshot;
 pub mod storage;
 pub mod tabs;
