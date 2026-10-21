@@ -43,6 +43,8 @@ pub struct FirefoxSession {
     pub tab_labels: HashMap<String, String>,
     /// Touch points of the active touch sequence, released by a later `input_touch` end.
     pub touches: Vec<(f64, f64)>,
+    /// Durable ids of nodes inside open shadow roots, which a stale ref must never recover by role and name.
+    pub shadow_ids: std::collections::HashSet<i64>,
     events: broadcast::Receiver<Value>,
 }
 
@@ -165,6 +167,7 @@ impl FirefoxSession {
             documents: HashMap::new(),
             tab_labels: HashMap::new(),
             touches: Vec::new(),
+            shadow_ids: Default::default(),
             events,
         })
     }
@@ -395,6 +398,7 @@ pub(crate) mod tests {
             documents: HashMap::new(),
             tab_labels: HashMap::new(),
             touches: Vec::new(),
+            shadow_ids: Default::default(),
             events,
         };
         (session, tx, calls)

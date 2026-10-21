@@ -199,7 +199,7 @@ pub(crate) fn touch_event(event_type: &str, points: &[(f64, f64)]) -> Value {
                 "touchStart" => vec![move_to, json!({ "type": "pointerDown", "button": 0 })],
                 "touchMove" => vec![move_to],
                 "touchEnd" => vec![json!({ "type": "pointerUp", "button": 0 })],
-                "touchCancel" => vec![json!({ "type": "pointerCancel", "button": 0 })],
+                "touchCancel" => vec![json!({ "type": "pointerUp", "button": 0 })],
                 _ => Vec::new(),
             };
             json!({

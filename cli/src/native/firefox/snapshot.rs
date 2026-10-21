@@ -19,7 +19,7 @@ const PAINT_WAIT: Duration = Duration::from_millis(500);
 const SETTLE_JS: &str =
     "() => new Promise(r => requestAnimationFrame(() => requestAnimationFrame(() => r(0))))";
 
-/// Batch-resolves a pruned `[selector, role, children]` tree to `[node, contentWindow]` pairs in document order.
+/// Batch-resolves a pruned `[selector, role, children]` tree to `[node, contentWindow, inShadowRoot]` triples in document order.
 /// Children of an open shadow host resolve inside its shadow root first.
 const RESOLVE_JS: &str = r#"(tree) => {
   const out = [];
@@ -31,7 +31,7 @@ const RESOLVE_JS: &str = r#"(tree) => {
   };
   const walk = ([sel, role, kids], roots) => {
     const el = role === 'document' ? roots[0] : sel && !sel.endsWith('#text') ? find(roots, sel) : null;
-    out.push([el, role === 'internal frame' && el ? el.contentWindow : null]);
+    out.push([el, role === 'internal frame' && el ? el.contentWindow : null, !!el && el.getRootNode() instanceof ShadowRoot]);
     const next = role !== 'document' && el && el.shadowRoot ? [el.shadowRoot, ...roots] : roots;
     for (const k of kids) walk(k, next);
   };
@@ -218,6 +218,7 @@ fn apply(
     if let Some(shared_id) = result[0]["sharedId"].as_str() {
         node["abSid"] = json!(shared_id);
         node["abCtx"] = json!(context);
+        node["abShadow"] = json!(result[2] == true);
     }
     if let Some(window) = result[1].as_str() {
         frames.push((path.clone(), window.to_string()));
@@ -246,6 +247,16 @@ fn find_node<'a>(node: &'a Value, context: &str, shared_id: &str) -> Option<&'a 
         .as_array()?
         .iter()
         .find_map(|c| find_node(c, context, shared_id))
+}
+
+fn find_context_root<'a>(node: &'a Value, context: &str) -> Option<&'a Value> {
+    if node["abCtx"] == context {
+        return Some(node);
+    }
+    node["children"]
+        .as_array()?
+        .iter()
+        .find_map(|c| find_context_root(c, context))
 }
 
 /// Tags every node of `doc` with its BiDi `abSid`/`abCtx`, then does the same inside each frame's own context.
@@ -300,13 +311,14 @@ pub async fn take_snapshot(
     options: &SnapshotOptions,
     ref_map: &mut RefMap,
 ) -> Result<String, String> {
-    let context = ff.top_context.clone();
+    let top = ff.top_context.clone();
+    let context = ff.context.clone();
     ff.bidi
-        .send("browsingContext.activate", json!({"context": context}))
+        .send("browsingContext.activate", json!({"context": top}))
         .await?;
     let _ = tokio::time::timeout(
         PAINT_WAIT,
-        ff.bidi.call_function(&context, SETTLE_JS, None, vec![]),
+        ff.bidi.call_function(&top, SETTLE_JS, None, vec![]),
     )
     .await;
     let tabs = ff.rdp.request("root", "listTabs", json!({})).await?;
@@ -321,22 +333,31 @@ pub async fn take_snapshot(
         .as_str()
         .ok_or("Firefox DevTools returned no accessibility actor for the tab")?;
     let mut doc = document_snapshot(&ff.rdp, accessibility).await?;
-    Box::pin(annotate(ff, &context, &mut doc, &tab)).await?;
+    Box::pin(annotate(ff, &top, &mut doc, &tab)).await?;
 
+    let frame_root = if context == top {
+        &doc
+    } else {
+        find_context_root(&doc, &context)
+            .ok_or("The selected frame is no longer in the page. Run frame again.")?
+    };
     let root = match &options.selector {
-        None => &doc,
+        None => frame_root,
         Some(selector) => {
             let shared_id = find_element(ff, &context, selector)
                 .await
                 .map_err(|e| format!("Invalid selector '{selector}': {e}"))?
                 .ok_or_else(|| format!("Selector '{selector}' did not match any element"))?;
-            find_node(&doc, &context, &shared_id)
+            find_node(frame_root, &context, &shared_id)
                 .ok_or_else(|| format!("No accessibility node found for selector '{selector}'"))?
         }
     };
     let mut urls = HashMap::new();
     let FirefoxSession {
-        refs, next_node_id, ..
+        refs,
+        next_node_id,
+        shadow_ids,
+        ..
     } = ff;
     let mut durable_id = |n: &Value| {
         let key = (
@@ -347,6 +368,9 @@ pub async fn take_snapshot(
             *next_node_id += 1;
             *next_node_id
         });
+        if n["abShadow"] == true {
+            shadow_ids.insert(id);
+        }
         if let Some(href) = n["value"]
             .as_str()
             .filter(|h| n["role"] == "link" && !h.is_empty())
@@ -356,7 +380,7 @@ pub async fn take_snapshot(
         Some(id)
     };
     let nodes = ax_nodes_from_snapshot(root, &mut durable_id);
-    let known = ref_map.observe_document(&context, None, &context, doc["abSid"].as_str());
+    let known = ref_map.observe_document(&context, None, &context, frame_root["abSid"].as_str());
     Ok(snapshot_from_ax_nodes(
         &nodes, &urls, options, ref_map, &context, None, known,
     ))

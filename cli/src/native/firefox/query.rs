@@ -25,6 +25,27 @@ const SHADOW_ROOTS_JS: &str = r#"function() {
     return out;
 }"#;
 
+const NAME_FILTER_JS: &str = r#"function(name, nodes) {
+  const norm = s => (s || '').replace(/\s+/g, ' ').trim().toLowerCase();
+  const want = norm(name);
+  const nameOf = el => {
+    const lb = el.getAttribute('aria-labelledby');
+    if (lb) {
+      const root = el.getRootNode();
+      const t = lb.trim().split(/\s+/).map(id => { const r = root.getElementById ? root.getElementById(id) : null; return r ? r.textContent : ''; }).join(' ');
+      if (norm(t)) return t;
+    }
+    const al = el.getAttribute('aria-label');
+    if (al && norm(al)) return al;
+    if (el.labels && el.labels.length) return Array.from(el.labels).map(l => l.textContent).join(' ');
+    const alt = el.getAttribute('alt');
+    if (alt && norm(alt)) return alt;
+    if (el.tagName === 'INPUT' && /^(button|submit|reset)$/i.test(el.type) && el.value) return el.value;
+    return el.textContent || el.getAttribute('title') || '';
+  };
+  return nodes.find(el => norm(nameOf(el)).includes(want)) || null;
+}"#;
+
 const FIND_TEXT_JS: &str = r#"function(value, exact) {
     for (const el of document.querySelectorAll('*')) {
         if (el.children.length === 0 && (exact ? el.textContent.trim() === value : el.textContent.includes(value))) return el;
@@ -302,6 +323,48 @@ async fn locate_deep(
         .next())
 }
 
+/// Every match in the document and in open shadow roots.
+async fn locate_all(
+    bidi: &BidiClient,
+    context: &str,
+    locator: Value,
+) -> Result<Vec<Value>, String> {
+    let mut nodes = locate_nodes(bidi, context, locator.clone(), None).await?;
+    let roots = bidi
+        .call_function(context, SHADOW_ROOTS_JS, None, vec![])
+        .await?;
+    let roots = roots.as_array().cloned().unwrap_or_default();
+    if !roots.is_empty() {
+        nodes.extend(locate_nodes(bidi, context, locator, Some(roots)).await?);
+    }
+    Ok(nodes)
+}
+
+/// Finds a role match whose name contains `name` ignoring case and extra whitespace, as Chrome does without `exact`.
+async fn locate_role_loose(
+    bidi: &BidiClient,
+    context: &str,
+    role: &str,
+    name: &str,
+) -> Result<Option<Value>, String> {
+    if let Some(node) = locate_deep(bidi, context, role_locator(role, Some(name))).await? {
+        return Ok(Some(node));
+    }
+    let candidates = locate_all(bidi, context, role_locator(role, None)).await?;
+    if candidates.is_empty() {
+        return Ok(None);
+    }
+    let found = bidi
+        .call_function(
+            context,
+            NAME_FILTER_JS,
+            None,
+            vec![json!(name), json!(candidates)],
+        )
+        .await?;
+    Ok(found["sharedId"].is_string().then_some(found))
+}
+
 fn target_from_node(context: &str, node: &Value) -> Result<Target, String> {
     let shared_id = node["sharedId"]
         .as_str()
@@ -364,12 +427,16 @@ async fn run_subaction(
     }
     let ref_num = state.ref_map.next_ref_num();
     let ref_id = format!("e{ref_num}");
+    let key = (target.context.clone(), target.shared_id.clone());
+    let existing = session(state)?.refs.get(&key).copied();
+    let node_id = existing.unwrap_or(TEMP_NODE_ID);
     state
         .ref_map
-        .add(ref_id.clone(), Some(TEMP_NODE_ID), "", "", None);
+        .add(ref_id.clone(), Some(node_id), "", "", None);
     state.ref_map.set_next_ref_num(ref_num + 1);
-    let key = (target.context.clone(), target.shared_id.clone());
-    session(state)?.refs.insert(key.clone(), TEMP_NODE_ID);
+    if existing.is_none() {
+        session(state)?.refs.insert(key.clone(), TEMP_NODE_ID);
+    }
     let mut sub = cmd.clone();
     sub["selector"] = json!(format!("@{ref_id}"));
     let result = match subaction {
@@ -382,8 +449,10 @@ async fn run_subaction(
         )),
     };
     state.ref_map.remove(&ref_id);
-    if let Ok(ff) = session(state) {
-        ff.refs.remove(&key);
+    if existing.is_none() {
+        if let Ok(ff) = session(state) {
+            ff.refs.remove(&key);
+        }
     }
     result
 }
@@ -398,7 +467,10 @@ pub async fn getbyrole(cmd: &Value, state: &mut DaemonState) -> Result<Value, St
     let exact = cmd.get("exact").and_then(Value::as_bool).unwrap_or(false);
     let ff = session(state)?;
     let context = ff.context.clone();
-    let node = locate_deep(&ff.bidi, &context, role_locator(role, name)).await?;
+    let node = match name {
+        Some(n) if !exact => locate_role_loose(&ff.bidi, &context, role, n).await?,
+        _ => locate_deep(&ff.bidi, &context, role_locator(role, name)).await?,
+    };
     let Some(node) = node.as_ref() else {
         return Err(format!(
             "No element found: {}",

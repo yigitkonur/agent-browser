@@ -77,6 +77,12 @@ async fn recover(
     context: Option<String>,
 ) -> Result<Target, String> {
     let (role, name) = (&entry.role, &entry.name);
+    if entry
+        .backend_node_id
+        .is_some_and(|id| ff.shadow_ids.contains(&id))
+    {
+        return Err(format!("Stale ref for role={role} name={name}: the element was inside a shadow root and is gone. Run snapshot again and use a fresh ref."));
+    }
     if entry.nth.is_some() {
         return Err(format!("Stale ref for role={role} name={name} cannot be recovered: the snapshot had several matching elements. Run snapshot again and use a fresh ref."));
     }

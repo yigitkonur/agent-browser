@@ -169,7 +169,7 @@ impl BidiClient {
             "target": target,
             "arguments": args.iter().map(to_local).collect::<Vec<_>>(),
             "awaitPromise": true,
-            "resultOwnership": "root",
+            "resultOwnership": "none",
         });
         if let Some(t) = this {
             params["this"] = t;

@@ -163,11 +163,63 @@ async fn target_rect(state: &DaemonState, target: &Target) -> Option<Rect> {
     parse_rect(&value)
 }
 
-/// Boxes for every resolved ref, read through each node's handle.
-async fn collect_annotations(state: &DaemonState) -> Result<Vec<RawAnnotation>, String> {
+const FRAME_RECTS_JS: &str = r#"() => Array.from(document.querySelectorAll('iframe,frame')).map(f => {
+  const r = f.getBoundingClientRect();
+  return [f.contentWindow, r.left + f.clientLeft, r.top + f.clientTop];
+})"#;
+
+/// The context id that contains `child` in a `browsingContext.getTree` context list.
+fn parent_context(contexts: &Value, child: &str) -> Option<String> {
+    for c in contexts.as_array()? {
+        let kids = &c["children"];
+        if kids
+            .as_array()
+            .is_some_and(|k| k.iter().any(|k| k["context"] == child))
+        {
+            return c["context"].as_str().map(String::from);
+        }
+        if let Some(found) = parent_context(kids, child) {
+            return Some(found);
+        }
+    }
+    None
+}
+
+/// Offset of the document in `from` inside the viewport of its ancestor `to`, summed over the iframes between them.
+async fn frame_offset(
+    ff: &super::session::FirefoxSession,
+    tree: &Value,
+    from: &str,
+    to: &str,
+) -> Option<(f64, f64)> {
+    let (mut current, mut dx, mut dy) = (from.to_string(), 0.0, 0.0);
+    while current != to {
+        let parent = parent_context(&tree["contexts"], &current)?;
+        let rows = ff
+            .bidi
+            .call_function(&parent, FRAME_RECTS_JS, None, vec![])
+            .await
+            .ok()?;
+        let row = rows.as_array()?.iter().find(|r| r[0] == current.as_str())?;
+        dx += row[1].as_f64()?;
+        dy += row[2].as_f64()?;
+        current = parent;
+    }
+    Some((dx, dy))
+}
+
+/// Boxes for every resolved ref, read through each node's handle and expressed in `capture` viewport coordinates.
+async fn collect_annotations(
+    state: &DaemonState,
+    capture: &str,
+) -> Result<Vec<RawAnnotation>, String> {
     let Some(ff) = state.firefox.as_ref() else {
         return Ok(Vec::new());
     };
+    let tree = ff
+        .bidi
+        .send("browsingContext.getTree", json!({"root": ff.top_context}))
+        .await?;
     let mut annotations = Vec::new();
     for (ref_id, entry) in state.ref_map.entries_sorted() {
         let Some(id) = entry.backend_node_id else {
@@ -181,9 +233,16 @@ async fn collect_annotations(state: &DaemonState) -> Result<Vec<RawAnnotation>, 
             context: context.clone(),
             shared_id: shared_id.clone(),
         };
-        let Some(rect) = target_rect(state, &target).await else {
+        let Some(mut rect) = target_rect(state, &target).await else {
             continue;
         };
+        if context != capture {
+            let Some((dx, dy)) = frame_offset(ff, &tree, context, capture).await else {
+                continue;
+            };
+            rect.x += dx;
+            rect.y += dy;
+        }
         if rect.width <= 0.0 || rect.height <= 0.0 {
             continue;
         }
@@ -233,15 +292,22 @@ pub async fn screenshot(cmd: &Value, state: &mut DaemonState) -> Result<Value, S
         (Some(target), true) => target_rect(state, target).await,
         _ => None,
     };
+    let capture_context = match (&target, full_page) {
+        (Some(target), false) => target.context.clone(),
+        _ => session(state)?.context.clone(),
+    };
     let annotations = if annotate {
-        filter_annotations(collect_annotations(state).await?, clip_rect.as_ref())
+        filter_annotations(
+            collect_annotations(state, &capture_context).await?,
+            clip_rect.as_ref(),
+        )
     } else {
         Vec::new()
     };
 
     let data = {
         let ff = session(state)?;
-        let context = ff.context.clone();
+        let context = capture_context.clone();
         let overlay = if annotate && !annotations.is_empty() {
             evaluate(ff, &context, &annotation_overlay_js(&annotations)).await?;
             true
@@ -402,5 +468,16 @@ mod tests {
         assert_eq!(custom["background"], false);
         assert_eq!(custom["orientation"], "landscape");
         assert_eq!(custom["shrinkToFit"], false);
+    }
+
+    #[test]
+    fn parent_context_finds_the_direct_parent_at_any_depth() {
+        let tree = json!([{"context": "top", "children": [
+            {"context": "a", "children": [{"context": "b", "children": []}]},
+            {"context": "c", "children": []}
+        ]}]);
+        assert_eq!(parent_context(&tree, "b").as_deref(), Some("a"));
+        assert_eq!(parent_context(&tree, "c").as_deref(), Some("top"));
+        assert_eq!(parent_context(&tree, "top"), None);
     }
 }
