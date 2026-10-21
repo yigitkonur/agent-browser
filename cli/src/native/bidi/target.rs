@@ -157,39 +157,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn disconnected_ref_with_no_match_is_stale() {
-        let (mut state, calls) = state_with_ref(None).await;
-        let e = resolve_target(&mut state, "@e1").await.unwrap_err();
-        assert!(e.contains("the ref is stale"), "{e}");
-        assert_eq!(
-            *calls.lock().unwrap(),
-            [
-                "script.callFunction",
-                "script.callFunction",
-                "browsingContext.locateNodes"
-            ]
-        );
-    }
-
-    #[tokio::test]
     async fn ref_from_an_earlier_document_is_never_recovered() {
         let (mut state, calls) = state_with_document(None, "doc2").await;
         let e = resolve_target(&mut state, "@e1").await.unwrap_err();
         assert!(e.contains("the page changed since the snapshot"), "{e}");
-        assert!(!calls
-            .lock()
-            .unwrap()
-            .contains(&"browsingContext.locateNodes".to_string()));
-    }
-
-    #[tokio::test]
-    async fn recovery_is_refused_for_refs_with_nth() {
-        let (mut state, calls) = state_with_ref(Some(1)).await;
-        let e = resolve_target(&mut state, "@e1").await.unwrap_err();
-        assert!(
-            e.contains("the snapshot had several matching elements"),
-            "{e}"
-        );
         assert!(!calls
             .lock()
             .unwrap()

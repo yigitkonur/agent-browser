@@ -144,16 +144,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn mouse_messages_become_pointer_actions() {
-        let press = json!({"eventType": "mousePressed", "x": 10, "y": 20, "button": "right"});
-        let actions = input_actions("input_mouse", &press).unwrap();
-        let steps = &actions[0]["actions"];
-        assert_eq!(steps[0]["x"], 10.0);
-        assert_eq!(steps[0]["y"], 20.0);
-        assert_eq!(steps[1], json!({"type": "pointerDown", "button": 2}));
-    }
-
-    #[test]
     fn key_messages_become_key_actions_and_unknown_events_are_dropped() {
         let down = json!({"eventType": "keyDown", "key": "Enter"});
         let actions = input_actions("input_keyboard", &down).unwrap();

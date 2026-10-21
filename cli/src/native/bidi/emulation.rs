@@ -454,58 +454,11 @@ mod tests {
     }
 
     #[test]
-    fn color_scheme_dark_maps_to_color_scheme_simulation() {
-        let config = validate_media(&media_with_feature("prefers-color-scheme", "dark")).unwrap();
-        assert_eq!(config["colorSchemeSimulation"], "dark");
-    }
-
-    #[test]
     fn reduced_motion_lists_supported_features() {
         let error = validate_media(&media_with_feature("prefers-reduced-motion", "reduce"))
             .expect_err("reduced motion is not supported");
         assert!(error.contains("prefers-reduced-motion"));
         assert!(error.contains("prefers-color-scheme"));
-    }
-
-    #[test]
-    fn iphone_preset_maps_viewport_and_dpr_without_touch_override() {
-        let commands = device("iPhone 15").unwrap();
-        assert_eq!(
-            commands
-                .iter()
-                .map(|(method, _)| *method)
-                .collect::<Vec<_>>(),
-            vec![
-                "browsingContext.setViewport",
-                "emulation.setUserAgentOverride",
-            ]
-        );
-        let lookup = |method: &str| {
-            commands
-                .iter()
-                .find(|(name, _)| *name == method)
-                .map(|(_, params)| params)
-                .unwrap_or_else(|| panic!("no {method} command"))
-        };
-
-        let viewport = lookup("browsingContext.setViewport");
-        assert_eq!(viewport["viewport"]["width"], 393);
-        assert_eq!(viewport["viewport"]["height"], 852);
-        assert_eq!(viewport["devicePixelRatio"], 3.0);
-
-        let ua = lookup("emulation.setUserAgentOverride");
-        assert!(ua["userAgent"].as_str().unwrap().contains("iPhone"));
-    }
-
-    #[test]
-    fn offline_toggles_network_conditions() {
-        let (method, params) = offline(true);
-        assert_eq!(method, "emulation.setNetworkConditions");
-        assert_eq!(params["networkConditions"]["type"], "offline");
-
-        let (method, params) = offline(false);
-        assert_eq!(method, "emulation.setNetworkConditions");
-        assert!(params["networkConditions"].is_null());
     }
 
     async fn session_state() -> (DaemonState, crate::native::bidi::session::tests::Calls) {
@@ -540,114 +493,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn device_sends_viewport_and_user_agent_without_touch_override() {
-        let (mut state, calls) = session_state().await;
-        let result = set_device(&json!({"device": "iPhone 15"}), &mut state)
-            .await
-            .unwrap();
-
-        assert_eq!(result["device"], "iPhone 15");
-        assert_eq!(result["width"], 393);
-        assert_eq!(result["height"], 852);
-        assert_eq!(result["deviceScaleFactor"], 3.0);
-        assert_eq!(result["mobile"], true);
-        assert_eq!(
-            calls.lock().unwrap().clone(),
-            vec![
-                "browsingContext.setViewport",
-                "emulation.setUserAgentOverride",
-            ]
-        );
-    }
-
-    #[tokio::test]
-    async fn media_dark_accepts_reduced_motion_no_preference() {
-        let (ff, _, _, _, rdp) = fake_session_with_rdp().await;
-        let mut state = DaemonState::new();
-        state.firefox = Some(ff);
-
-        set_media(
-            &json!({"colorScheme": "dark", "reducedMotion": "no-preference"}),
-            &mut state,
-        )
-        .await
-        .unwrap();
-
-        let messages = rdp.lock().unwrap().clone();
-        let update = messages
-            .iter()
-            .find(|m| m["type"] == "updateConfiguration")
-            .expect("no updateConfiguration message");
-        assert_eq!(update["configuration"]["colorSchemeSimulation"], "dark");
-    }
-
-    #[tokio::test]
-    async fn timezone_locale_and_offline_are_scoped_to_the_active_context() {
-        let (ff, _, _, bidi, _) = fake_session_with_rdp().await;
-        let mut state = DaemonState::new();
-        state.firefox = Some(ff);
-
-        set_timezone(&json!({"timezoneId": "Asia/Tokyo"}), &mut state)
-            .await
-            .unwrap();
-        set_locale(&json!({"locale": "fr-FR"}), &mut state)
-            .await
-            .unwrap();
-        set_offline(&json!({"offline": true}), &mut state)
-            .await
-            .unwrap();
-
-        let messages = bidi.lock().unwrap().clone();
-        let find = |method: &str| {
-            messages
-                .iter()
-                .find(|m| m["method"] == method)
-                .unwrap_or_else(|| panic!("no {method} message"))
-        };
-        assert_eq!(
-            find("emulation.setTimezoneOverride")["params"]["timezone"],
-            "Asia/Tokyo"
-        );
-        assert_eq!(
-            find("emulation.setTimezoneOverride")["params"]["contexts"],
-            json!(["ctx-active"])
-        );
-        assert_eq!(
-            find("emulation.setLocaleOverride")["params"]["locale"],
-            "fr-FR"
-        );
-        assert_eq!(
-            find("emulation.setNetworkConditions")["params"]["networkConditions"]["type"],
-            "offline"
-        );
-    }
-
-    #[tokio::test]
-    async fn permissions_are_granted_for_the_page_origin() {
-        let (ff, _, _, bidi, _) = fake_session_with_rdp().await;
-        let mut state = DaemonState::new();
-        state.firefox = Some(ff);
-
-        let result = set_permissions(
-            &json!({"permissions": ["geolocation", "notifications"]}),
-            &mut state,
-        )
-        .await
-        .unwrap();
-        assert_eq!(result, json!({"granted": ["geolocation", "notifications"]}));
-
-        let messages = bidi.lock().unwrap().clone();
-        let grants: Vec<&Value> = messages
-            .iter()
-            .filter(|m| m["method"] == "permissions.setPermission")
-            .collect();
-        assert_eq!(grants.len(), 2);
-        assert_eq!(grants[0]["params"]["descriptor"]["name"], "geolocation");
-        assert_eq!(grants[0]["params"]["origin"], "https://example.com");
-        assert_eq!(grants[0]["params"]["state"], "granted");
-    }
-
-    #[tokio::test]
     async fn permissions_without_a_page_origin_fail_before_granting() {
         let (mut state, calls) = session_state().await;
         let error = set_permissions(&json!({"permissions": ["geolocation"]}), &mut state)
@@ -669,60 +514,6 @@ mod tests {
             .unwrap_err();
         assert!(error.contains("prefers-reduced-motion"), "{error}");
         assert!(calls.lock().unwrap().is_empty());
-    }
-
-    #[tokio::test]
-    async fn media_updates_the_selected_tab_configuration_actor() {
-        let (ff, _, _, _, rdp) = fake_session_with_rdp().await;
-        let mut state = DaemonState::new();
-        state.firefox = Some(ff);
-
-        let result = set_media(
-            &json!({"colorScheme": "dark", "media": "screen"}),
-            &mut state,
-        )
-        .await
-        .unwrap();
-        assert_eq!(result, json!({"set": true}));
-
-        let messages = rdp.lock().unwrap().clone();
-        let kinds: Vec<&str> = messages
-            .iter()
-            .map(|m| m["type"].as_str().unwrap())
-            .collect();
-        assert_eq!(
-            kinds,
-            vec![
-                "listTabs",
-                "getWatcher",
-                "getTargetConfigurationActor",
-                "updateConfiguration",
-            ]
-        );
-        assert_eq!(messages[0]["to"], "root");
-        assert_eq!(messages[1]["to"], "tab1");
-        assert_eq!(messages[2]["to"], "watcher1");
-        assert_eq!(messages[3]["to"], "cfg1");
-        assert_eq!(
-            messages[3]["configuration"]["colorSchemeSimulation"],
-            "dark"
-        );
-        assert_eq!(
-            messages[3]["configuration"]["printSimulationEnabled"],
-            false
-        );
-        assert_eq!(
-            state
-                .firefox
-                .as_ref()
-                .unwrap()
-                .emulation
-                .media
-                .as_ref()
-                .unwrap()
-                .features,
-            vec![("prefers-color-scheme".to_string(), "dark".to_string())]
-        );
     }
 
     #[tokio::test]

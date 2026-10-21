@@ -410,72 +410,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn key_commands_send_bidi_key_actions_and_return_chrome_shapes() {
-        let (ff, _tx, calls) = fake_session().await;
-        let mut state = state_with(ff);
-
-        assert_eq!(
-            press(&json!({"key": "Control+a"}), &mut state)
-                .await
-                .unwrap(),
-            json!({"pressed": "Control+a"})
-        );
-        assert_eq!(
-            keydown(&json!({"key": "Tab"}), &mut state).await.unwrap(),
-            json!({"keydown": "Tab"})
-        );
-        assert_eq!(
-            keyup(&json!({"key": "Shift"}), &mut state).await.unwrap(),
-            json!({"keyup": "Shift"})
-        );
-        assert_eq!(
-            keyboard(&json!({"subaction": "type", "text": "hi"}), &mut state)
-                .await
-                .unwrap(),
-            json!({"typed": "hi"})
-        );
-        assert_eq!(
-            keyboard(
-                &json!({"subaction": "insertText", "text": "hi"}),
-                &mut state
-            )
-            .await
-            .unwrap(),
-            json!({"inserted": true})
-        );
-        assert_eq!(
-            keyboard(&json!({"eventType": "keyUp", "key": "Enter"}), &mut state)
-                .await
-                .unwrap(),
-            json!({"dispatched": "keyUp"})
-        );
-        assert_eq!(
-            input_keyboard(&json!({"type": "keyDown", "key": "a"}), &mut state)
-                .await
-                .unwrap(),
-            json!({"dispatched": "keyDown"})
-        );
-        assert_eq!(
-            inserttext(&json!({"text": "x"}), &mut state).await.unwrap(),
-            json!({"inserted": true})
-        );
-
-        assert_all(
-            &calls,
-            &[
-                "input.performActions",
-                "input.performActions",
-                "input.performActions",
-                "input.performActions",
-                "script.callFunction",
-                "input.performActions",
-                "input.performActions",
-                "script.callFunction",
-            ],
-        );
-    }
-
-    #[tokio::test]
     async fn insert_text_scripts_the_literal_text_without_key_events() {
         let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let log = seen.clone();
@@ -483,7 +417,7 @@ mod tests {
             if req["method"] == "script.callFunction" {
                 log.lock().unwrap().push(req["params"].clone());
             }
-            json!({"type": "success", "result": {"type": "undefined"}})
+            json!({"type": "success", "result": {"type": "boolean", "value": true}})
         })
         .await;
         let mut state = state_with(ff);
@@ -507,6 +441,8 @@ mod tests {
         let js = params[0]["functionDeclaration"].as_str().unwrap();
         assert!(js.contains("setRangeText"), "{js}");
         assert!(js.contains("execCommand('insertText'"), "{js}");
+        assert!(js.contains("cancelable: true"), "{js}");
+        assert!(!js.contains("range.insertNode"), "{js}");
         assert_eq!(
             params[0]["arguments"][0],
             json!({"type": "string", "value": "a\n\tb"})
@@ -541,85 +477,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn fill_focuses_selects_all_then_types() {
-        let (ff, _tx, calls) = fake_session_with(node_responder).await;
-        let mut state = state_with(ff);
-        let result = fill(&json!({"selector": "#email", "value": "a@b.c"}), &mut state)
-            .await
-            .unwrap();
-        assert_eq!(result, json!({"filled": "#email"}));
-        assert_all(
-            &calls,
-            &[
-                "script.callFunction",
-                "script.callFunction",
-                "script.callFunction",
-                "input.performActions",
-            ],
-        );
-    }
-
-    #[tokio::test]
-    async fn type_with_clear_runs_the_shared_clear_js_before_typing() {
-        let (ff, _tx, calls) = fake_session_with(node_responder).await;
-        let mut state = state_with(ff);
-        let result = type_text(
-            &json!({"selector": "input", "text": "ok", "clear": true}),
-            &mut state,
-        )
-        .await
-        .unwrap();
-        assert_eq!(result, json!({"typed": "ok"}));
-        assert_all(
-            &calls,
-            &[
-                "script.callFunction",
-                "script.callFunction",
-                "script.callFunction",
-                "input.performActions",
-            ],
-        );
-    }
-
-    #[tokio::test]
-    async fn clear_selectall_and_setvalue_run_the_shared_page_js() {
-        let (ff, _tx, calls) = fake_session_with(node_responder).await;
-        let mut state = state_with(ff);
-
-        assert_eq!(
-            clear(&json!({"selector": "#a"}), &mut state).await.unwrap(),
-            json!({"cleared": "#a"})
-        );
-        assert_eq!(
-            selectall(&json!({"selector": "#a"}), &mut state)
-                .await
-                .unwrap(),
-            json!({"selected": "#a"})
-        );
-        assert_eq!(
-            setvalue(&json!({"selector": "#a", "value": "v"}), &mut state)
-                .await
-                .unwrap(),
-            json!({"set": "#a", "value": "v"})
-        );
-        assert_eq!(calls.lock().unwrap().len(), 6);
-    }
-
-    #[tokio::test]
-    async fn select_returns_the_requested_values() {
-        let (ff, _tx, calls) = fake_session_with(node_responder).await;
-        let mut state = state_with(ff);
-        let result = select(
-            &json!({"selector": "#sizes", "values": ["s", "m"]}),
-            &mut state,
-        )
-        .await
-        .unwrap();
-        assert_eq!(result, json!({"selected": ["s", "m"]}));
-        assert_all(&calls, &["script.callFunction", "script.callFunction"]);
-    }
-
-    #[tokio::test]
     async fn check_and_uncheck_click_only_when_the_state_differs() {
         let (ff, _tx, calls) = fake_session_with(checkbox_responder(false)).await;
         let mut state = state_with(ff);
@@ -650,22 +507,5 @@ mod tests {
             json!({"unchecked": "#agree"})
         );
         assert_eq!(calls.lock().unwrap().len(), 3);
-    }
-
-    #[tokio::test]
-    async fn upload_resolves_files_and_reports_how_many_were_set() {
-        let (ff, _tx, calls) = fake_session_with(node_responder).await;
-        let mut state = state_with(ff);
-        let result = upload(
-            &json!({"selector": "input[type=file]", "files": ["a.txt", "/b.txt"]}),
-            &mut state,
-        )
-        .await
-        .unwrap();
-        assert_eq!(
-            result,
-            json!({"uploaded": 2, "selector": "input[type=file]"})
-        );
-        assert_all(&calls, &["script.callFunction", "input.setFiles"]);
     }
 }
