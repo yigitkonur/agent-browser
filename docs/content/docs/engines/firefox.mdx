@@ -16,12 +16,12 @@ On macOS and Linux, install Firefox 150 or newer. The Snap package is not suppor
 
 ## Usage
 
-Use the `--engine` flag to select Firefox:
+Set `--engine` on the command that launches the browser. Later commands in the same session use Firefox without the flag:
 
 ```bash
 agent-browser --engine firefox open example.com
-agent-browser --engine firefox snapshot
-agent-browser --engine firefox screenshot
+agent-browser snapshot
+agent-browser screenshot
 ```
 
 Or set it as the default via environment variable:

@@ -112,6 +112,22 @@
       {
         "from": "MCP tools use the same provider through extraArgs: [\"--engine\", \"obscura\", \"--executable-path\", \"/path/to/obscura\"].",
         "to": "MCP tools use the same provider: set AGENT_BROWSER_EXECUTABLE_PATH in the MCP server's environment and pass extraArgs: [\"--engine\", \"obscura\"], because --executable-path is rejected in extraArgs."
+      },
+      {
+        "from": "Use the `--engine` flag to select Obscura:",
+        "to": "Set `--engine` on the command that launches the browser. Later commands in the same session use Obscura without the flag:"
+      },
+      {
+        "from": "Use the --engine flag to select Obscura:",
+        "to": "Set --engine on the command that launches the browser. Later commands in the same session use Obscura without the flag:"
+      },
+      {
+        "from": "agent-browser --engine obscura snapshot",
+        "to": "agent-browser snapshot"
+      },
+      {
+        "from": "agent-browser --engine obscura screenshot",
+        "to": "agent-browser screenshot"
       }
     ]
   },
