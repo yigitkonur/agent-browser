@@ -1,5 +1,3 @@
-//! Firefox keyboard and form commands.
-
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 

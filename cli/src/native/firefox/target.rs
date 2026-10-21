@@ -1,5 +1,3 @@
-//! Resolves refs and selectors to BiDi node handles for Firefox element commands.
-
 use serde_json::json;
 
 use super::actions::session;

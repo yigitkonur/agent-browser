@@ -1,19 +1,14 @@
-//! Firefox cookies, web storage and saved state. Formats must match `cookies.rs` and `state.rs`.
-
 use std::collections::HashSet;
 use std::fs;
 
-use aes_gcm::aead::Aead;
-use aes_gcm::{aead::KeyInit, Aes256Gcm};
 use base64::Engine;
 use serde_json::{json, Value};
-use sha2::{Digest, Sha256};
 
 use super::actions::session;
 use super::session::FirefoxSession;
 use crate::native::actions::DaemonState;
 use crate::native::cookies::Cookie;
-use crate::native::state::{self, OriginStorage, StorageState};
+use crate::native::state::{self, encrypt_data, read_state_json, OriginStorage, StorageState};
 use crate::validation::{is_valid_session_name, session_name_error};
 
 const ORIGIN_STORAGE_JS: &str = r#"() => {
@@ -346,68 +341,6 @@ async fn collect_state(ff: &FirefoxSession) -> Result<StorageState, String> {
 
 fn encryption_key() -> Option<String> {
     std::env::var("AGENT_BROWSER_ENCRYPTION_KEY").ok()
-}
-
-fn is_encrypted(path: &str) -> bool {
-    path.ends_with(".json.enc") || path.ends_with(".json.enc.previous")
-}
-
-fn encrypt_data(data: &[u8], key_str: &str) -> Result<Vec<u8>, String> {
-    let mut hasher = Sha256::new();
-    hasher.update(key_str.as_bytes());
-    let key_bytes = hasher.finalize();
-    let cipher = Aes256Gcm::new_from_slice(&key_bytes).map_err(|e| format!("Invalid key: {e}"))?;
-
-    let mut nonce = [0u8; 12];
-    getrandom::getrandom(&mut nonce).map_err(|e| format!("Failed to generate nonce: {e}"))?;
-    let ciphertext = cipher
-        .encrypt(aes_gcm::Nonce::from_slice(&nonce), data)
-        .map_err(|e| format!("Encryption failed: {e}"))?;
-
-    let mut result = Vec::with_capacity(12 + ciphertext.len());
-    result.extend_from_slice(&nonce);
-    result.extend_from_slice(&ciphertext);
-    Ok(result)
-}
-
-fn decrypt_data(data: &[u8], key_str: &str) -> Result<Vec<u8>, String> {
-    if data.len() < 13 {
-        return Err("Ciphertext too short".to_string());
-    }
-    let (nonce_bytes, ciphertext) = data.split_at(12);
-    let mut hasher = Sha256::new();
-    hasher.update(key_str.as_bytes());
-    let key_bytes = hasher.finalize();
-    let cipher = Aes256Gcm::new_from_slice(&key_bytes).map_err(|e| format!("Invalid key: {e}"))?;
-    cipher
-        .decrypt(aes_gcm::Nonce::from_slice(nonce_bytes), ciphertext)
-        .map_err(|e| format!("Decryption failed: {e}"))
-}
-
-fn read_state_json(path: &str) -> Result<String, String> {
-    if is_encrypted(path) {
-        let key = encryption_key().ok_or_else(|| {
-            "Encrypted state file requires AGENT_BROWSER_ENCRYPTION_KEY".to_string()
-        })?;
-        let data = fs::read(path).map_err(|e| format!("Failed to read state from {path}: {e}"))?;
-        let plaintext = decrypt_data(&data, &key)?;
-        return String::from_utf8(plaintext)
-            .map_err(|e| format!("Decrypted state is not valid UTF-8: {e}"));
-    }
-    match fs::read_to_string(path) {
-        Ok(json) => Ok(json),
-        Err(err) => match encryption_key() {
-            Some(key) => {
-                let encrypted = format!("{path}.enc");
-                let data = fs::read(&encrypted)
-                    .map_err(|_| format!("Failed to read state from {path}: {err}"))?;
-                let plaintext = decrypt_data(&data, &key)?;
-                String::from_utf8(plaintext)
-                    .map_err(|e| format!("Decrypted state is not valid UTF-8: {e}"))
-            }
-            None => Err(format!("Failed to read state from {path}: {err}")),
-        },
-    }
 }
 
 fn serialize_state(state: &StorageState) -> Result<String, String> {

@@ -106,19 +106,6 @@ pub(crate) fn pointer_wheel(origin: &Origin, delta_x: f64, delta_y: f64) -> Valu
     }])
 }
 
-/// Build the BiDi actions for dragging from one origin to another.
-pub(crate) fn pointer_drag(from: &Origin, to: &Origin) -> Value {
-    pointer_source(
-        "mouse",
-        vec![
-            pointer_move(from),
-            json!({ "type": "pointerDown", "button": mouse_button("left") }),
-            pointer_move(to),
-            json!({ "type": "pointerUp", "button": mouse_button("left") }),
-        ],
-    )
-}
-
 /// Build the BiDi actions for dragging between two points, emitting `steps` intermediate moves.
 pub(crate) fn pointer_drag_path(from: &Origin, to: &Origin, steps: u32) -> Value {
     let (fx, fy, _) = origin_json(from);
@@ -148,19 +135,6 @@ pub(crate) fn touch_tap(origin: &Origin) -> Value {
         vec![
             pointer_move(origin),
             json!({ "type": "pointerDown", "button": 0 }),
-            json!({ "type": "pointerUp", "button": 0 }),
-        ],
-    )
-}
-
-/// Build the BiDi actions for a touch swipe.
-pub(crate) fn touch_swipe(from: &Origin, to: &Origin) -> Value {
-    pointer_source(
-        "touch",
-        vec![
-            pointer_move(from),
-            json!({ "type": "pointerDown", "button": 0 }),
-            pointer_move(to),
             json!({ "type": "pointerUp", "button": 0 }),
         ],
     )

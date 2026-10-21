@@ -1,5 +1,3 @@
-//! Firefox read/query commands, semantic locators, frame switching and eval handles.
-
 use serde_json::{json, Value};
 
 use super::actions::session;

@@ -12441,7 +12441,7 @@ fn collapse_wildcards(pattern: &str) -> String {
     out
 }
 
-fn route_url_matches(pattern: &str, url: &str) -> bool {
+pub(crate) fn route_url_matches(pattern: &str, url: &str) -> bool {
     if pattern == "*" {
         return true;
     }

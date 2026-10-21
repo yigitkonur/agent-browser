@@ -1,5 +1,3 @@
-//! Page-level Firefox commands: navigation, history, reading page state, evaluate and wait.
-
 use std::time::Duration;
 
 use serde_json::{json, Value};
@@ -7,7 +5,7 @@ use serde_json::{json, Value};
 use super::actions::session;
 use super::network;
 use super::session::FirefoxSession;
-use crate::native::actions::DaemonState;
+use crate::native::actions::{route_url_matches as url_matches, DaemonState};
 
 const POLL_INTERVAL: Duration = Duration::from_millis(100);
 
@@ -237,72 +235,6 @@ async fn poll_url(ff: &FirefoxSession, pattern: &str, timeout_ms: u64) -> Result
         }
         tokio::time::sleep(POLL_INTERVAL).await;
     }
-}
-
-/// Collapses runs of `*` in a URL glob.
-fn collapse_wildcards(pattern: &str) -> String {
-    let mut out = String::with_capacity(pattern.len());
-    let mut last_was_star = false;
-    for ch in pattern.chars() {
-        if ch == '*' {
-            if !last_was_star {
-                out.push(ch);
-            }
-            last_was_star = true;
-        } else {
-            out.push(ch);
-            last_was_star = false;
-        }
-    }
-    out
-}
-
-/// Matches a URL glob the way Chrome's `wait --url` does: `*` is a wildcard and a
-/// pattern without `*` is a substring match.
-fn url_matches(pattern: &str, url: &str) -> bool {
-    if pattern == "*" {
-        return true;
-    }
-    if !pattern.contains('*') {
-        return url.contains(pattern);
-    }
-
-    let pattern = collapse_wildcards(pattern);
-    let parts: Vec<&str> = pattern.split('*').filter(|p| !p.is_empty()).collect();
-    if parts.is_empty() {
-        return true;
-    }
-
-    let anchored_start = !pattern.starts_with('*');
-    let anchored_end = !pattern.ends_with('*');
-    let mut pos = 0usize;
-    let mut idx = 0usize;
-
-    if anchored_start {
-        let first = parts[0];
-        if !url.starts_with(first) {
-            return false;
-        }
-        pos = first.len();
-        idx = 1;
-    }
-
-    while idx < parts.len() {
-        let part = parts[idx];
-        let Some(found) = url[pos..].find(part) else {
-            return false;
-        };
-        pos += found + part.len();
-        idx += 1;
-    }
-
-    if anchored_end {
-        if let Some(last) = parts.last() {
-            return url.ends_with(last);
-        }
-    }
-
-    true
 }
 
 /// Waits for ms, selector, text, load state, function or URL. Must return the same

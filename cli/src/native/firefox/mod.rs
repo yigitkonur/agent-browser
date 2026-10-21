@@ -1,4 +1,3 @@
-//! Firefox support: WebDriver BiDi and DevTools protocol clients, launch and commands.
 #![allow(dead_code)]
 
 pub mod actions;

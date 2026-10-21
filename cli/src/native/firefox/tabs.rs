@@ -1,5 +1,3 @@
-//! Firefox tab and window commands. Tab ids are stable `t<N>` ids over BiDi browsing contexts.
-
 use serde_json::{json, Value};
 
 use super::actions::session;

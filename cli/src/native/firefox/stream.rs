@@ -1,5 +1,3 @@
-//! Dashboard live view for Firefox: a screenshot poller and input forwarding.
-
 use std::sync::Arc;
 use std::time::Duration;
 

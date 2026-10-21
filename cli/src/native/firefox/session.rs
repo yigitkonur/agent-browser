@@ -1,5 +1,3 @@
-//! A running Firefox: the owned process, both protocol clients and per-session state.
-
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::sync::Arc;
@@ -24,7 +22,7 @@ const PROMPT_EVENTS: [&str; 2] = [
     "browsingContext.userPromptClosed",
 ];
 
-/** One launched Firefox. Dropping it kills the process tree and deletes the profile. */
+/// One launched Firefox. Dropping it kills the process tree and deletes the profile.
 pub struct FirefoxSession {
     process: Option<FirefoxProcess>,
     pub bidi: Arc<BidiClient>,

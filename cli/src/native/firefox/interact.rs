@@ -1,5 +1,3 @@
-//! Firefox element pointer commands, raw input, scrolling and dialogs.
-
 use serde_json::{json, Value};
 
 use super::actions::session;

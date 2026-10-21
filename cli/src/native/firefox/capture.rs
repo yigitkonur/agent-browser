@@ -1,4 +1,4 @@
-//! Firefox screenshots and PDF.
+use std::collections::HashMap;
 
 use base64::Engine;
 use serde_json::{json, Value};
@@ -220,14 +220,17 @@ async fn collect_annotations(
         .bidi
         .send("browsingContext.getTree", json!({"root": ff.top_context}))
         .await?;
+    let mut targets_by_id = HashMap::with_capacity(ff.refs.len());
+    for (target, id) in &ff.refs {
+        targets_by_id.entry(*id).or_insert(target);
+    }
     let mut annotations = Vec::new();
     let mut overlay_annotations = Vec::new();
     for (ref_id, entry) in state.ref_map.entries_sorted() {
         let Some(id) = entry.backend_node_id else {
             continue;
         };
-        let Some(((context, shared_id), _)) = ff.refs.iter().find(|(_, value)| **value == id)
-        else {
+        let Some(&(context, shared_id)) = targets_by_id.get(&id) else {
             continue;
         };
         let target = Target {

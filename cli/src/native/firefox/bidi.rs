@@ -1,5 +1,3 @@
-//! WebDriver BiDi client over a WebSocket.
-
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -18,7 +16,7 @@ type WsSink = futures_util::stream::SplitSink<
     Message,
 >;
 
-/** A connected BiDi session socket; the reader task stops when the client is dropped. */
+/// A connected BiDi session socket; the reader task stops when the client is dropped.
 pub struct BidiClient {
     sink: tokio::sync::Mutex<WsSink>,
     pending: Pending,

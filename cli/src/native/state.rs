@@ -462,7 +462,7 @@ pub async fn save_auto_state_transactional(
     Ok(final_path.to_string_lossy().to_string())
 }
 
-fn read_state_json(path: &str) -> Result<String, String> {
+pub(crate) fn read_state_json(path: &str) -> Result<String, String> {
     if is_encrypted_state(std::path::Path::new(path)) {
         let key = std::env::var("AGENT_BROWSER_ENCRYPTION_KEY").map_err(|_| {
             "Encrypted state file requires AGENT_BROWSER_ENCRYPTION_KEY".to_string()
@@ -759,7 +759,7 @@ pub fn state_rename(old_path: &str, new_name: &str) -> Result<Value, String> {
     }))
 }
 
-fn encrypt_data(data: &[u8], key_str: &str) -> Result<Vec<u8>, String> {
+pub(crate) fn encrypt_data(data: &[u8], key_str: &str) -> Result<Vec<u8>, String> {
     let mut hasher = Sha256::new();
     hasher.update(key_str.as_bytes());
     let key_bytes = hasher.finalize();
