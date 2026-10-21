@@ -152,6 +152,14 @@ pub async fn hover(
     Ok((x + offset.0, y + offset.1))
 }
 
+const FOCUS_JS: &str = "function() { this.focus(); }";
+
+const CLEAR_INPUT_JS: &str = r#"function() {
+                    this.select && this.select();
+                    this.value = '';
+                    this.dispatchEvent(new Event('input', { bubbles: true }));
+                }"#;
+
 pub async fn fill(
     client: &CdpClient,
     session_id: &str,
@@ -174,7 +182,7 @@ pub async fn fill(
         .send_command_typed::<_, Value>(
             "Runtime.callFunctionOn",
             &CallFunctionOnParams {
-                function_declaration: "function() { this.focus(); }".to_string(),
+                function_declaration: FOCUS_JS.to_string(),
                 object_id: Some(object_id.clone()),
                 arguments: None,
                 return_by_value: Some(true),
@@ -189,12 +197,7 @@ pub async fn fill(
         .send_command_typed::<_, Value>(
             "Runtime.callFunctionOn",
             &CallFunctionOnParams {
-                function_declaration: r#"function() {
-                    this.select && this.select();
-                    this.value = '';
-                    this.dispatchEvent(new Event('input', { bubbles: true }));
-                }"#
-                .to_string(),
+                function_declaration: CLEAR_INPUT_JS.to_string(),
                 object_id: Some(object_id),
                 arguments: None,
                 return_by_value: Some(true),
@@ -217,6 +220,12 @@ pub async fn fill(
 
     Ok(())
 }
+
+const CLEAR_INPUT_TYPING_JS: &str = r#"function() {
+                        this.select && this.select();
+                        this.value = '';
+                        this.dispatchEvent(new Event('input', { bubbles: true }));
+                    }"#;
 
 #[allow(clippy::too_many_arguments)]
 pub async fn type_text(
@@ -243,7 +252,7 @@ pub async fn type_text(
         .send_command_typed::<_, Value>(
             "Runtime.callFunctionOn",
             &CallFunctionOnParams {
-                function_declaration: "function() { this.focus(); }".to_string(),
+                function_declaration: FOCUS_JS.to_string(),
                 object_id: Some(object_id.clone()),
                 arguments: None,
                 return_by_value: Some(true),
@@ -258,12 +267,7 @@ pub async fn type_text(
             .send_command_typed::<_, Value>(
                 "Runtime.callFunctionOn",
                 &CallFunctionOnParams {
-                    function_declaration: r#"function() {
-                        this.select && this.select();
-                        this.value = '';
-                        this.dispatchEvent(new Event('input', { bubbles: true }));
-                    }"#
-                    .to_string(),
+                    function_declaration: CLEAR_INPUT_TYPING_JS.to_string(),
                     object_id: Some(object_id),
                     arguments: None,
                     return_by_value: Some(true),
@@ -410,6 +414,8 @@ pub async fn press_key_with_modifiers(
     Ok(())
 }
 
+const SCROLL_BY_JS: &str = "function(dx, dy) { this.scrollBy(dx, dy); }";
+
 pub async fn scroll(
     client: &CdpClient,
     session_id: &str,
@@ -422,7 +428,7 @@ pub async fn scroll(
     if let Some(sel) = selector_or_ref {
         let (object_id, effective_session_id) =
             resolve_element_object_id(client, session_id, ref_map, sel, iframe_sessions).await?;
-        let js = "function(dx, dy) { this.scrollBy(dx, dy); }".to_string();
+        let js = SCROLL_BY_JS.to_string();
         client
             .send_command_typed::<_, Value>(
                 "Runtime.callFunctionOn",
@@ -462,27 +468,7 @@ pub async fn scroll(
     Ok(())
 }
 
-pub async fn select_option(
-    client: &CdpClient,
-    session_id: &str,
-    ref_map: &RefMap,
-    selector_or_ref: &str,
-    values: &[String],
-    iframe_sessions: &HashMap<String, String>,
-) -> Result<(), String> {
-    let (object_id, effective_session_id) = resolve_element_object_id(
-        client,
-        session_id,
-        ref_map,
-        selector_or_ref,
-        iframe_sessions,
-    )
-    .await?;
-
-    // Matching nothing must be an error, not a silent success: an agent that
-    // selects a misspelled option otherwise sees "Done", and only discovers
-    // the page state is wrong after more commands. List what was available.
-    let js = r#"function(vals) {
+const SELECT_OPTION_JS: &str = r#"function(vals) {
             const normalize = (value) => String(value ?? '')
                 .replace(/[\u200B\u200C\u200D\u2060\uFEFF]/g, '')
                 .replace(/\s+/g, ' ')
@@ -517,8 +503,29 @@ pub async fn select_option(
             for (const opt of options) opt.selected = wanted.has(opt);
             this.dispatchEvent(new Event('change', { bubbles: true }));
             return { matched: wanted.size };
-        }"#
-    .to_string();
+        }"#;
+
+pub async fn select_option(
+    client: &CdpClient,
+    session_id: &str,
+    ref_map: &RefMap,
+    selector_or_ref: &str,
+    values: &[String],
+    iframe_sessions: &HashMap<String, String>,
+) -> Result<(), String> {
+    let (object_id, effective_session_id) = resolve_element_object_id(
+        client,
+        session_id,
+        ref_map,
+        selector_or_ref,
+        iframe_sessions,
+    )
+    .await?;
+
+    // Matching nothing must be an error, not a silent success: an agent that
+    // selects a misspelled option otherwise sees "Done", and only discovers
+    // the page state is wrong after more commands. List what was available.
+    let js = SELECT_OPTION_JS.to_string();
 
     let result = client
         .send_command_typed::<_, Value>(
@@ -657,6 +664,30 @@ pub async fn uncheck(
     Ok(position)
 }
 
+const CLICK_CHECKBOX_JS: &str = r#"function() {
+            var el = this;
+            var tag = el.tagName && el.tagName.toUpperCase();
+            // 1. Native input — click it directly
+            if (tag === 'INPUT' && (el.type === 'checkbox' || el.type === 'radio')) {
+                el.click();
+                return;
+            }
+            // 2. Follow label → control association
+            var label = tag === 'LABEL' ? el : (el.closest && el.closest('label'));
+            if (label && label.tagName && label.tagName.toUpperCase() === 'LABEL' && label.control) {
+                label.control.click();
+                return;
+            }
+            // 3. Nested native input
+            var input = el.querySelector && el.querySelector('input[type="checkbox"], input[type="radio"]');
+            if (input) {
+                input.click();
+                return;
+            }
+            // 4. ARIA role control — click the element itself
+            el.click();
+        }"#;
+
 /// Fallback for when the coordinate-based CDP click did not toggle the
 /// checkbox/radio state. This mirrors how Playwright dispatches clicks
 /// through the DOM rather than via raw Input.dispatchMouseEvent coordinates.
@@ -682,29 +713,7 @@ async fn js_click_checkbox(
     )
     .await?;
 
-    let js = r#"function() {
-            var el = this;
-            var tag = el.tagName && el.tagName.toUpperCase();
-            // 1. Native input — click it directly
-            if (tag === 'INPUT' && (el.type === 'checkbox' || el.type === 'radio')) {
-                el.click();
-                return;
-            }
-            // 2. Follow label → control association
-            var label = tag === 'LABEL' ? el : (el.closest && el.closest('label'));
-            if (label && label.tagName && label.tagName.toUpperCase() === 'LABEL' && label.control) {
-                label.control.click();
-                return;
-            }
-            // 3. Nested native input
-            var input = el.querySelector && el.querySelector('input[type="checkbox"], input[type="radio"]');
-            if (input) {
-                input.click();
-                return;
-            }
-            // 4. ARIA role control — click the element itself
-            el.click();
-        }"#;
+    let js = CLICK_CHECKBOX_JS;
 
     client
         .send_command_typed::<_, Value>(
@@ -743,7 +752,7 @@ pub async fn focus(
         .send_command_typed::<_, Value>(
             "Runtime.callFunctionOn",
             &CallFunctionOnParams {
-                function_declaration: "function() { this.focus(); }".to_string(),
+                function_declaration: FOCUS_JS.to_string(),
                 object_id: Some(object_id),
                 arguments: None,
                 return_by_value: Some(true),
@@ -755,6 +764,13 @@ pub async fn focus(
 
     Ok(())
 }
+
+const CLEAR_VALUE_JS: &str = r#"function() {
+                    this.focus();
+                    this.value = '';
+                    this.dispatchEvent(new Event('input', { bubbles: true }));
+                    this.dispatchEvent(new Event('change', { bubbles: true }));
+                }"#;
 
 pub async fn clear(
     client: &CdpClient,
@@ -776,13 +792,7 @@ pub async fn clear(
         .send_command_typed::<_, Value>(
             "Runtime.callFunctionOn",
             &CallFunctionOnParams {
-                function_declaration: r#"function() {
-                    this.focus();
-                    this.value = '';
-                    this.dispatchEvent(new Event('input', { bubbles: true }));
-                    this.dispatchEvent(new Event('change', { bubbles: true }));
-                }"#
-                .to_string(),
+                function_declaration: CLEAR_VALUE_JS.to_string(),
                 object_id: Some(object_id),
                 arguments: None,
                 return_by_value: Some(true),
@@ -794,6 +804,19 @@ pub async fn clear(
 
     Ok(())
 }
+
+const SELECT_ALL_JS: &str = r#"function() {
+                    this.focus();
+                    if (typeof this.select === 'function') {
+                        this.select();
+                    } else {
+                        const range = document.createRange();
+                        range.selectNodeContents(this);
+                        const sel = window.getSelection();
+                        sel.removeAllRanges();
+                        sel.addRange(range);
+                    }
+                }"#;
 
 pub async fn select_all(
     client: &CdpClient,
@@ -815,19 +838,7 @@ pub async fn select_all(
         .send_command_typed::<_, Value>(
             "Runtime.callFunctionOn",
             &CallFunctionOnParams {
-                function_declaration: r#"function() {
-                    this.focus();
-                    if (typeof this.select === 'function') {
-                        this.select();
-                    } else {
-                        const range = document.createRange();
-                        range.selectNodeContents(this);
-                        const sel = window.getSelection();
-                        sel.removeAllRanges();
-                        sel.addRange(range);
-                    }
-                }"#
-                .to_string(),
+                function_declaration: SELECT_ALL_JS.to_string(),
                 object_id: Some(object_id),
                 arguments: None,
                 return_by_value: Some(true),
@@ -839,6 +850,9 @@ pub async fn select_all(
 
     Ok(())
 }
+
+const SCROLL_INTO_VIEW_JS: &str =
+    "function() { this.scrollIntoView({ block: 'center', inline: 'center' }); }";
 
 pub async fn scroll_into_view(
     client: &CdpClient,
@@ -860,9 +874,7 @@ pub async fn scroll_into_view(
         .send_command_typed::<_, Value>(
             "Runtime.callFunctionOn",
             &CallFunctionOnParams {
-                function_declaration:
-                    "function() { this.scrollIntoView({ block: 'center', inline: 'center' }); }"
-                        .to_string(),
+                function_declaration: SCROLL_INTO_VIEW_JS.to_string(),
                 object_id: Some(object_id),
                 arguments: None,
                 return_by_value: Some(true),
@@ -920,6 +932,16 @@ pub async fn dispatch_event(
     Ok(())
 }
 
+const HIGHLIGHT_JS: &str = r#"function() {
+                    this.style.outline = '2px solid red';
+                    this.style.outlineOffset = '2px';
+                    const el = this;
+                    setTimeout(() => {
+                        el.style.outline = '';
+                        el.style.outlineOffset = '';
+                    }, 3000);
+                }"#;
+
 pub async fn highlight(
     client: &CdpClient,
     session_id: &str,
@@ -940,16 +962,7 @@ pub async fn highlight(
         .send_command_typed::<_, Value>(
             "Runtime.callFunctionOn",
             &CallFunctionOnParams {
-                function_declaration: r#"function() {
-                    this.style.outline = '2px solid red';
-                    this.style.outlineOffset = '2px';
-                    const el = this;
-                    setTimeout(() => {
-                        el.style.outline = '';
-                        el.style.outlineOffset = '';
-                    }, 3000);
-                }"#
-                .to_string(),
+                function_declaration: HIGHLIGHT_JS.to_string(),
                 object_id: Some(object_id),
                 arguments: None,
                 return_by_value: Some(true),
