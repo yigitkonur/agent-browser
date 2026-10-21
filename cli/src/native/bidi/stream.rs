@@ -92,10 +92,7 @@ async fn publish_frame(live: &FirefoxLive, server: &StreamServer) {
             .await;
     }
     let (device_width, device_height) = server.viewport().await;
-    let timestamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0);
+    let timestamp = crate::native::stream::timestamp_ms();
     server.broadcast_screencast_frame(
         data,
         &FrameMetadata {

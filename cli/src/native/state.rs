@@ -285,6 +285,24 @@ async fn collect_storage_in_target(
     Ok(results)
 }
 
+/// Page function that collects the current origin's localStorage and sessionStorage.
+pub(crate) const ORIGIN_STORAGE_JS: &str = r#"() => {
+    const result = { origin: location.origin, localStorage: [], sessionStorage: [] };
+    try {
+        for (let i = 0; i < localStorage.length; i++) {
+            const key = localStorage.key(i);
+            result.localStorage.push({ name: key, value: localStorage.getItem(key) });
+        }
+    } catch(e) {}
+    try {
+        for (let i = 0; i < sessionStorage.length; i++) {
+            const key = sessionStorage.key(i);
+            result.sessionStorage.push({ name: key, value: sessionStorage.getItem(key) });
+        }
+    } catch(e) {}
+    return result;
+}"#;
+
 pub async fn save_state(
     client: &CdpClient,
     session_id: &str,
@@ -295,22 +313,7 @@ pub async fn save_state(
 ) -> Result<String, String> {
     let cookies = cookies::get_all_cookies(client, session_id).await?;
 
-    let origin_js = r#"(() => {
-        const result = { origin: location.origin, localStorage: [], sessionStorage: [] };
-        try {
-            for (let i = 0; i < localStorage.length; i++) {
-                const key = localStorage.key(i);
-                result.localStorage.push({ name: key, value: localStorage.getItem(key) });
-            }
-        } catch(e) {}
-        try {
-            for (let i = 0; i < sessionStorage.length; i++) {
-                const key = sessionStorage.key(i);
-                result.sessionStorage.push({ name: key, value: sessionStorage.getItem(key) });
-            }
-        } catch(e) {}
-        return result;
-    })()"#;
+    let origin_js = format!("({ORIGIN_STORAGE_JS})()");
 
     // Merge visited origins with current frame tree origins
     let mut all_origins = visited_origins.clone();
@@ -327,7 +330,7 @@ pub async fn save_state(
     let mut origins = Vec::new();
     let mut current_origin = String::new();
 
-    if let Some(storage) = eval_origin_storage(client, session_id, origin_js).await {
+    if let Some(storage) = eval_origin_storage(client, session_id, &origin_js).await {
         current_origin = storage.origin.clone();
         if !storage.local_storage.is_empty() || !storage.session_storage.is_empty() {
             origins.push(storage);
@@ -339,7 +342,7 @@ pub async fn save_state(
     if !all_origins.is_empty() {
         let remaining: Vec<String> = all_origins.into_iter().collect();
         if let Ok(temp_origins) =
-            collect_storage_via_temp_target(client, &remaining, origin_js).await
+            collect_storage_via_temp_target(client, &remaining, &origin_js).await
         {
             origins.extend(temp_origins);
         }

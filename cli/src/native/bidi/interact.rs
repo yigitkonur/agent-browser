@@ -1,13 +1,14 @@
 use serde_json::{json, Value};
 
 use super::actions::session;
+use super::forms::require;
 use super::input::{
-    pointer_click, pointer_down, pointer_drag_path, pointer_hover, pointer_up, pointer_wheel,
-    touch_event, touch_swipe_path, touch_tap, Origin,
+    pointer_click, pointer_down, pointer_hover, pointer_path, pointer_up, pointer_wheel,
+    touch_event, touch_tap, Origin,
 };
 use super::session::FirefoxSession;
 use super::target::{resolve_target, Target};
-use crate::native::actions::{DaemonState, PendingDialog};
+use crate::native::actions::{mouse_button_mask, DaemonState, PendingDialog};
 use crate::native::element::{
     intercepted_error, not_actionable_error, ACTIONABILITY_JS, BLOCKER_AT_JS,
 };
@@ -90,10 +91,7 @@ async fn perform(ff: &FirefoxSession, context: &str, actions: Value) -> Result<b
 
 /// Clicks a ref or selector, returning Chrome's `{clicked}` shape.
 pub async fn click(cmd: &Value, state: &mut DaemonState) -> Result<Value, String> {
-    let selector = cmd
-        .get("selector")
-        .and_then(Value::as_str)
-        .ok_or("Missing 'selector' parameter")?;
+    let selector = require(cmd, "selector")?;
 
     if cmd.get("newTab").and_then(Value::as_bool).unwrap_or(false) {
         return click_new_tab(selector, state).await;
@@ -138,10 +136,7 @@ async fn click_new_tab(selector: &str, state: &mut DaemonState) -> Result<Value,
 
 /// Double-clicks a ref or selector.
 pub async fn dblclick(cmd: &Value, state: &mut DaemonState) -> Result<Value, String> {
-    let selector = cmd
-        .get("selector")
-        .and_then(Value::as_str)
-        .ok_or("Missing 'selector' parameter")?;
+    let selector = require(cmd, "selector")?;
     let target = resolve_target(state, selector).await?;
     let ff = session(state)?;
     let (x, y) = prepare(ff, &target, selector, true).await?;
@@ -154,10 +149,7 @@ pub async fn dblclick(cmd: &Value, state: &mut DaemonState) -> Result<Value, Str
 
 /// Moves the mouse over a ref or selector.
 pub async fn hover(cmd: &Value, state: &mut DaemonState) -> Result<Value, String> {
-    let selector = cmd
-        .get("selector")
-        .and_then(Value::as_str)
-        .ok_or("Missing 'selector' parameter")?;
+    let selector = require(cmd, "selector")?;
     let target = resolve_target(state, selector).await?;
     let ff = session(state)?;
     let (x, y) = prepare(ff, &target, selector, true).await?;
@@ -168,10 +160,7 @@ pub async fn hover(cmd: &Value, state: &mut DaemonState) -> Result<Value, String
 
 /// Focuses a ref or selector.
 pub async fn focus(cmd: &Value, state: &mut DaemonState) -> Result<Value, String> {
-    let selector = cmd
-        .get("selector")
-        .and_then(Value::as_str)
-        .ok_or("Missing 'selector' parameter")?;
+    let selector = require(cmd, "selector")?;
     let target = resolve_target(state, selector).await?;
     session(state)?
         .bidi
@@ -182,10 +171,7 @@ pub async fn focus(cmd: &Value, state: &mut DaemonState) -> Result<Value, String
 
 /// Taps a ref or selector with a touch pointer.
 pub async fn tap(cmd: &Value, state: &mut DaemonState) -> Result<Value, String> {
-    let selector = cmd
-        .get("selector")
-        .and_then(Value::as_str)
-        .ok_or("Missing 'selector' parameter")?;
+    let selector = require(cmd, "selector")?;
     let target = resolve_target(state, selector).await?;
     let ff = session(state)?;
     let (x, y) = prepare(ff, &target, selector, true).await?;
@@ -217,7 +203,8 @@ pub async fn swipe(cmd: &Value, state: &mut DaemonState) -> Result<Value, String
         ),
     };
 
-    let actions = touch_swipe_path(
+    let actions = pointer_path(
+        "touch",
         &Origin::Viewport {
             x: start_x,
             y: start_y,
@@ -241,14 +228,8 @@ pub async fn swipe(cmd: &Value, state: &mut DaemonState) -> Result<Value, String
 
 /// Drags from one ref or selector to another.
 pub async fn drag(cmd: &Value, state: &mut DaemonState) -> Result<Value, String> {
-    let source = cmd
-        .get("source")
-        .and_then(Value::as_str)
-        .ok_or("Missing 'source' parameter")?;
-    let target_selector = cmd
-        .get("target")
-        .and_then(Value::as_str)
-        .ok_or("Missing 'target' parameter")?;
+    let source = require(cmd, "source")?;
+    let target_selector = require(cmd, "target")?;
     let source_target = resolve_target(state, source).await?;
     let target = resolve_target(state, target_selector).await?;
     if source_target.context != target.context {
@@ -258,7 +239,8 @@ pub async fn drag(cmd: &Value, state: &mut DaemonState) -> Result<Value, String>
     let ff = session(state)?;
     let (sx, sy) = prepare(ff, &source_target, source, true).await?;
     let (tx, ty) = prepare(ff, &target, target_selector, true).await?;
-    let actions = pointer_drag_path(
+    let actions = pointer_path(
+        "mouse",
         &Origin::Viewport { x: sx, y: sy },
         &Origin::Viewport { x: tx, y: ty },
         10,
@@ -306,10 +288,7 @@ pub async fn scroll(cmd: &Value, state: &mut DaemonState) -> Result<Value, Strin
 
 /// Scrolls a ref or selector into view.
 pub async fn scrollintoview(cmd: &Value, state: &mut DaemonState) -> Result<Value, String> {
-    let selector = cmd
-        .get("selector")
-        .and_then(Value::as_str)
-        .ok_or("Missing 'selector' parameter")?;
+    let selector = require(cmd, "selector")?;
     let target = resolve_target(state, selector).await?;
     session(state)?
         .bidi
@@ -325,10 +304,7 @@ pub async fn scrollintoview(cmd: &Value, state: &mut DaemonState) -> Result<Valu
 
 /// Dispatches a DOM event on a ref or selector.
 pub async fn dispatch(cmd: &Value, state: &mut DaemonState) -> Result<Value, String> {
-    let selector = cmd
-        .get("selector")
-        .and_then(Value::as_str)
-        .ok_or("Missing 'selector' parameter")?;
+    let selector = require(cmd, "selector")?;
     let event_type = cmd
         .get("event")
         .or_else(|| cmd.get("eventType"))
@@ -345,10 +321,7 @@ pub async fn dispatch(cmd: &Value, state: &mut DaemonState) -> Result<Value, Str
 
 /// Highlights a ref or selector with a temporary red outline.
 pub async fn highlight(cmd: &Value, state: &mut DaemonState) -> Result<Value, String> {
-    let selector = cmd
-        .get("selector")
-        .and_then(Value::as_str)
-        .ok_or("Missing 'selector' parameter")?;
+    let selector = require(cmd, "selector")?;
     let target = resolve_target(state, selector).await?;
     session(state)?
         .bidi
@@ -362,19 +335,8 @@ pub async fn highlight(cmd: &Value, state: &mut DaemonState) -> Result<Value, St
     Ok(json!({ "highlighted": selector }))
 }
 
-fn button_mask(button: &str) -> i32 {
-    match button {
-        "left" => 1,
-        "right" => 2,
-        "middle" => 4,
-        "back" => 8,
-        "forward" => 16,
-        _ => 0,
-    }
-}
-
 fn apply_button(state: &mut DaemonState, event_type: &str, button: &str) {
-    let mask = button_mask(button);
+    let mask = mouse_button_mask(button);
     match event_type {
         "mousePressed" => state.mouse_state.buttons |= mask,
         "mouseReleased" => state.mouse_state.buttons &= !mask,
@@ -432,7 +394,7 @@ pub async fn mousedown(cmd: &Value, state: &mut DaemonState) -> Result<Value, St
         x: state.mouse_state.x,
         y: state.mouse_state.y,
     };
-    state.mouse_state.buttons |= button_mask(button);
+    state.mouse_state.buttons |= mouse_button_mask(button);
 
     let ff = session(state)?;
     perform(ff, &ff.context.clone(), pointer_down(&origin, button)).await?;
@@ -446,7 +408,7 @@ pub async fn mouseup(cmd: &Value, state: &mut DaemonState) -> Result<Value, Stri
         x: state.mouse_state.x,
         y: state.mouse_state.y,
     };
-    state.mouse_state.buttons &= !button_mask(button);
+    state.mouse_state.buttons &= !mouse_button_mask(button);
 
     let ff = session(state)?;
     perform(ff, &ff.context.clone(), pointer_up(&origin, button)).await?;

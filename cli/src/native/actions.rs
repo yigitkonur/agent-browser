@@ -36,7 +36,7 @@ use super::policy::{ActionPolicy, ConfirmActions, PolicyResult};
 use super::providers;
 use super::react;
 use super::recording::{self, RecordingState};
-use super::screenshot::{self, ScreenshotOptions};
+use super::screenshot::{self, screenshot_options, ScreenshotOptions};
 use super::snapshot::{self, SnapshotOptions};
 use super::state;
 use super::storage;
@@ -6653,34 +6653,7 @@ async fn handle_screenshot(cmd: &Value, state: &mut DaemonState) -> Result<Value
         annotate
     );
 
-    let format = cmd
-        .get("format")
-        .or_else(|| cmd.get("type"))
-        .and_then(|v| v.as_str())
-        .unwrap_or("png")
-        .to_string();
-
-    let mut options = ScreenshotOptions {
-        selector: cmd
-            .get("selector")
-            .and_then(|v| v.as_str())
-            .map(String::from),
-        path: cmd.get("path").and_then(|v| v.as_str()).map(String::from),
-        full_page: cmd
-            .get("fullPage")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false),
-        format,
-        quality: cmd
-            .get("quality")
-            .and_then(|v| v.as_i64())
-            .map(|q| q as i32),
-        annotate,
-        output_dir: cmd
-            .get("screenshotDir")
-            .and_then(|v| v.as_str())
-            .map(String::from),
-    };
+    let mut options = screenshot_options(cmd);
 
     let (session_id, result) = if let Some(wb) = state
         .webdriver_backend
@@ -8778,6 +8751,28 @@ async fn handle_recording_restart(cmd: &Value, state: &mut DaemonState) -> Resul
     }))
 }
 
+/// Returns the explicit PDF path or a timestamped file under the default PDF directory, creating the directory.
+pub(crate) fn pdf_save_path(cmd: &Value) -> String {
+    match cmd.get("path").and_then(Value::as_str) {
+        Some(path) => path.to_string(),
+        None => {
+            let dir = dirs::home_dir()
+                .unwrap_or_else(std::env::temp_dir)
+                .join(".agent-browser")
+                .join("tmp")
+                .join("pdfs");
+            let _ = std::fs::create_dir_all(&dir);
+            let timestamp = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis();
+            dir.join(format!("page-{}.pdf", timestamp))
+                .to_string_lossy()
+                .to_string()
+        }
+    }
+}
+
 async fn handle_pdf(cmd: &Value, state: &DaemonState) -> Result<Value, String> {
     let mgr = state.browser.as_ref().ok_or("Browser not launched")?;
     let session_id = mgr.active_session_id()?.to_string();
@@ -8798,25 +8793,7 @@ async fn handle_pdf(cmd: &Value, state: &DaemonState) -> Result<Value, String> {
         .and_then(|v| v.as_str())
         .ok_or("No PDF data returned")?;
 
-    let path = cmd.get("path").and_then(|v| v.as_str());
-    let save_path = match path {
-        Some(p) => p.to_string(),
-        None => {
-            let dir = dirs::home_dir()
-                .unwrap_or_else(std::env::temp_dir)
-                .join(".agent-browser")
-                .join("tmp")
-                .join("pdfs");
-            let _ = std::fs::create_dir_all(&dir);
-            let timestamp = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_millis();
-            dir.join(format!("page-{}.pdf", timestamp))
-                .to_string_lossy()
-                .to_string()
-        }
-    };
+    let save_path = pdf_save_path(cmd);
 
     let bytes = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, data)
         .map_err(|e| format!("Failed to decode PDF: {}", e))?;
@@ -9229,6 +9206,24 @@ async fn handle_dialog(cmd: &Value, state: &mut DaemonState) -> Result<Value, St
     Ok(json!({ "handled": true, "accepted": accept }))
 }
 
+/// Reads the upload file list from `files`, falling back to a single `file`.
+pub(crate) fn upload_files(cmd: &Value) -> Vec<String> {
+    cmd.get("files")
+        .and_then(Value::as_array)
+        .map(|files| {
+            files
+                .iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
+        .or_else(|| {
+            cmd.get("file")
+                .and_then(Value::as_str)
+                .map(|file| vec![file.to_string()])
+        })
+        .unwrap_or_default()
+}
+
 async fn handle_upload(cmd: &Value, state: &DaemonState) -> Result<Value, String> {
     let mgr = state.browser.as_ref().ok_or("Browser not launched")?;
     let selector = cmd
@@ -9236,20 +9231,7 @@ async fn handle_upload(cmd: &Value, state: &DaemonState) -> Result<Value, String
         .and_then(|v| v.as_str())
         .ok_or("Missing 'selector' parameter")?;
 
-    let files: Vec<String> = cmd
-        .get("files")
-        .and_then(|v| v.as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|v| v.as_str().map(String::from))
-                .collect()
-        })
-        .or_else(|| {
-            cmd.get("file")
-                .and_then(|v| v.as_str())
-                .map(|s| vec![s.to_string()])
-        })
-        .unwrap_or_default();
+    let files = upload_files(cmd);
 
     mgr.upload_files(selector, &files, &state.ref_map, &state.iframe_sessions)
         .await?;
@@ -13844,7 +13826,7 @@ async fn handle_device_list() -> Result<Value, String> {
 // Input event handlers
 // ---------------------------------------------------------------------------
 
-fn mouse_button_mask(button: &str) -> i32 {
+pub(crate) fn mouse_button_mask(button: &str) -> i32 {
     match button {
         "left" => 1,
         "right" => 2,

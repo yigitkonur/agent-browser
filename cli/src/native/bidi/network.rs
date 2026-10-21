@@ -7,6 +7,7 @@ use tokio::sync::{broadcast, RwLock};
 
 use super::actions::session;
 use super::client::BidiClient;
+use super::forms::require;
 use super::session::FirefoxSession;
 use super::target::resolve_target;
 use super::types::{BytesValue, Header, NetworkData, NetworkEvent, RequestData};
@@ -729,10 +730,7 @@ async fn in_active_tab(ff: &FirefoxSession, context: &str) -> bool {
 
 /// `responsebody`: waits for the next response whose URL contains the pattern and returns its body.
 pub async fn responsebody(cmd: &Value, state: &mut DaemonState) -> Result<Value, String> {
-    let pattern = cmd
-        .get("url")
-        .and_then(Value::as_str)
-        .ok_or("Missing 'url' parameter")?;
+    let pattern = require(cmd, "url")?;
     let timeout_ms = cmd
         .get("timeout")
         .and_then(Value::as_u64)
@@ -824,14 +822,8 @@ async fn wait_download(
 
 /// `download`: clicks the ref or selector and saves the resulting file at `path`.
 pub async fn download(cmd: &Value, state: &mut DaemonState) -> Result<Value, String> {
-    let selector = cmd
-        .get("selector")
-        .and_then(Value::as_str)
-        .ok_or("Missing 'selector' parameter")?;
-    let path = cmd
-        .get("path")
-        .and_then(Value::as_str)
-        .ok_or("Missing 'path' parameter")?;
+    let selector = require(cmd, "selector")?;
+    let path = require(cmd, "path")?;
     let (dir, dest) = chrome::resolve_download_dest(path)?;
     let target = resolve_target(state, selector).await?;
     let ff = session(state)?;

@@ -3,6 +3,7 @@ use std::time::Duration;
 use serde_json::{json, Value};
 
 use super::actions::session;
+use super::forms::require;
 use super::network;
 use super::session::FirefoxSession;
 use crate::native::actions::{route_url_matches as url_matches, DaemonState};
@@ -41,10 +42,7 @@ fn reset_page_state(state: &mut DaemonState) {
 /// Navigates the active tab and returns `{url, title, targetId}` like `BrowserManager::navigate`.
 /// `waitUntil` maps to the BiDi `wait` state.
 pub async fn navigate(cmd: &Value, state: &mut DaemonState) -> Result<Value, String> {
-    let url = cmd
-        .get("url")
-        .and_then(Value::as_str)
-        .ok_or("Missing 'url' parameter")?;
+    let url = require(cmd, "url")?;
     let wait = match cmd.get("waitUntil").and_then(Value::as_str) {
         Some("domcontentloaded") => "interactive",
         Some("none") => "none",
@@ -148,10 +146,7 @@ pub async fn content(state: &mut DaemonState) -> Result<Value, String> {
 
 /// Evaluates `script` and returns `{result, origin}` like Chrome's `handle_evaluate`.
 pub async fn evaluate(cmd: &Value, state: &mut DaemonState) -> Result<Value, String> {
-    let script = cmd
-        .get("script")
-        .and_then(Value::as_str)
-        .ok_or("Missing 'script' parameter")?;
+    let script = require(cmd, "script")?;
     let ff = session(state)?;
     let result = ff.eval(script).await?;
     let origin = ff.url().await.unwrap_or_default();
@@ -296,10 +291,7 @@ pub async fn wait(cmd: &Value, state: &mut DaemonState) -> Result<Value, String>
 /// Waits for the active URL to match `url` and returns `{url}` like Chrome's
 /// `handle_waitforurl`.
 pub async fn waitforurl(cmd: &Value, state: &mut DaemonState) -> Result<Value, String> {
-    let url_pattern = cmd
-        .get("url")
-        .and_then(Value::as_str)
-        .ok_or("Missing 'url' parameter")?;
+    let url_pattern = require(cmd, "url")?;
     let timeout_ms = cmd
         .get("timeout")
         .and_then(Value::as_u64)
@@ -338,10 +330,7 @@ pub async fn waitforloadstate(cmd: &Value, state: &mut DaemonState) -> Result<Va
 /// Waits for `expression` to be truthy and returns `{result}` like Chrome's
 /// `handle_waitforfunction`.
 pub async fn waitforfunction(cmd: &Value, state: &mut DaemonState) -> Result<Value, String> {
-    let expression = cmd
-        .get("expression")
-        .and_then(Value::as_str)
-        .ok_or("Missing 'expression' parameter")?;
+    let expression = require(cmd, "expression")?;
     let timeout_ms = cmd
         .get("timeout")
         .and_then(Value::as_u64)

@@ -1,6 +1,7 @@
 use serde_json::{json, Map, Value};
 
 use super::actions::session;
+use super::forms::require;
 use super::session::FirefoxSession;
 use crate::native::actions::{device_preset, DaemonState, EmulatedMedia};
 
@@ -305,10 +306,7 @@ pub async fn set_device(cmd: &Value, state: &mut DaemonState) -> Result<Value, S
 
 /// Overrides the user agent for the active tab and any tab opened later.
 pub async fn set_user_agent(cmd: &Value, state: &mut DaemonState) -> Result<Value, String> {
-    let user_agent = cmd
-        .get("userAgent")
-        .and_then(Value::as_str)
-        .ok_or("Missing 'userAgent' parameter")?;
+    let user_agent = require(cmd, "userAgent")?;
     let context = session(state)?.top_context.clone();
     send_scoped(session(state)?, &context, self::user_agent(user_agent)).await?;
     session(state)?.emulation.user_agent = Some(user_agent.to_string());
@@ -317,10 +315,7 @@ pub async fn set_user_agent(cmd: &Value, state: &mut DaemonState) -> Result<Valu
 
 /// Overrides the locale for the active tab and any tab opened later.
 pub async fn set_locale(cmd: &Value, state: &mut DaemonState) -> Result<Value, String> {
-    let locale = cmd
-        .get("locale")
-        .and_then(Value::as_str)
-        .ok_or("Missing 'locale' parameter")?;
+    let locale = require(cmd, "locale")?;
     let context = session(state)?.top_context.clone();
     send_scoped(session(state)?, &context, self::locale(locale)).await?;
     session(state)?.emulation.locale = Some(locale.to_string());

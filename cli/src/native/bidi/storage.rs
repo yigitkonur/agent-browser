@@ -4,6 +4,7 @@ use std::fs;
 use serde_json::{json, Value};
 
 use super::actions::session;
+use super::forms::require;
 use super::page::poll_until_true;
 use super::session::FirefoxSession;
 use super::types::{BytesValue, Cookie as BidiCookie, GetCookies};
@@ -11,23 +12,6 @@ use crate::native::actions::{route_url_matches, DaemonState};
 use crate::native::cookies::Cookie;
 use crate::native::state::{self, encrypt_data, read_state_json, OriginStorage, StorageState};
 use crate::validation::{is_valid_session_name, session_name_error};
-
-const ORIGIN_STORAGE_JS: &str = r#"() => {
-    const result = { origin: location.origin, localStorage: [], sessionStorage: [] };
-    try {
-        for (let i = 0; i < localStorage.length; i++) {
-            const key = localStorage.key(i);
-            result.localStorage.push({ name: key, value: localStorage.getItem(key) });
-        }
-    } catch(e) {}
-    try {
-        for (let i = 0; i < sessionStorage.length; i++) {
-            const key = sessionStorage.key(i);
-            result.sessionStorage.push({ name: key, value: sessionStorage.getItem(key) });
-        }
-    } catch(e) {}
-    return result;
-}"#;
 
 fn storage_js_name(storage_type: &str) -> &'static str {
     match storage_type {
@@ -248,14 +232,8 @@ pub async fn storage_get(cmd: &Value, state: &mut DaemonState) -> Result<Value, 
 pub async fn storage_set(cmd: &Value, state: &mut DaemonState) -> Result<Value, String> {
     let ff = session(state)?;
     let storage_type = cmd.get("type").and_then(Value::as_str).unwrap_or("local");
-    let key = cmd
-        .get("key")
-        .and_then(Value::as_str)
-        .ok_or("Missing 'key' parameter")?;
-    let value = cmd
-        .get("value")
-        .and_then(Value::as_str)
-        .ok_or("Missing 'value' parameter")?;
+    let key = require(cmd, "key")?;
+    let value = require(cmd, "value")?;
     let js = format!(
         "{}.setItem({}, {})",
         storage_js_name(storage_type),
@@ -298,7 +276,7 @@ fn collect_context_ids(contexts: &Value, out: &mut Vec<String>) {
 async fn read_origin(ff: &FirefoxSession, context: &str) -> Result<OriginStorage, String> {
     let data = ff
         .bidi
-        .call_function(context, ORIGIN_STORAGE_JS, None, Vec::new())
+        .call_function(context, state::ORIGIN_STORAGE_JS, None, Vec::new())
         .await
         .map_err(|e| format!("Failed to read storage: {e}"))?;
     serde_json::from_value(data).map_err(|e| format!("Failed to read storage: {e}"))
@@ -565,10 +543,7 @@ pub async fn load_state_path(ff: &mut FirefoxSession, path: &str) -> Result<Vec<
 /// Loads a `state.rs` JSON file, dropping Chrome-only cookie fields, like Chrome's
 /// `handle_state_load`. `--session-name` restore reuses this through `load_state_path`.
 pub async fn state_load(cmd: &Value, state: &mut DaemonState) -> Result<Value, String> {
-    let path = cmd
-        .get("path")
-        .and_then(Value::as_str)
-        .ok_or("Missing 'path' parameter")?;
+    let path = require(cmd, "path")?;
     let ff = session(state)?;
     let skipped = load_state_path(ff, path).await?;
     Ok(json!({ "loaded": true, "path": path, "skippedOrigins": skipped }))

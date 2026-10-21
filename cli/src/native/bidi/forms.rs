@@ -7,14 +7,14 @@ use super::actions::session;
 use super::input::{key_chord_actions, key_event_actions, key_text_actions};
 use super::session::FirefoxSession;
 use super::target::{resolve_target, Target};
-use crate::native::actions::DaemonState;
+use crate::native::actions::{upload_files, DaemonState};
 use crate::native::element::ELEMENT_CHECKED_JS;
 use crate::native::interaction::{
     CLEAR_INPUT_TYPING_JS, CLEAR_VALUE_JS, CLICK_CHECKBOX_JS, FOCUS_JS, SELECT_ALL_JS,
     SELECT_OPTION_JS,
 };
 
-fn require<'a>(cmd: &'a Value, key: &str) -> Result<&'a str, String> {
+pub(super) fn require<'a>(cmd: &'a Value, key: &str) -> Result<&'a str, String> {
     cmd.get(key)
         .and_then(Value::as_str)
         .ok_or_else(|| format!("Missing '{key}' parameter"))
@@ -77,23 +77,6 @@ fn select_values(cmd: &Value) -> Vec<String> {
             .map(|value| vec![value.to_string()])
             .unwrap_or_default(),
     }
-}
-
-fn upload_files(cmd: &Value) -> Vec<String> {
-    cmd.get("files")
-        .and_then(Value::as_array)
-        .map(|files| {
-            files
-                .iter()
-                .filter_map(|v| v.as_str().map(String::from))
-                .collect()
-        })
-        .or_else(|| {
-            cmd.get("file")
-                .and_then(Value::as_str)
-                .map(|file| vec![file.to_string()])
-        })
-        .unwrap_or_default()
 }
 
 fn absolute_files(files: &[String]) -> Vec<String> {
