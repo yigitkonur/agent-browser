@@ -228,6 +228,7 @@ pub struct ResponseContent {
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 pub struct NetworkEvent {
+    pub context: Option<String>,
     pub request: RequestData,
     pub response: ResponseData,
     pub timestamp: u64,

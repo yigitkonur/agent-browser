@@ -14738,6 +14738,16 @@ async fn e2e_firefox_core_flow_and_ref_stability() {
     assert_success(&firefox_act(&mut state, "click", &second, json!({})).await);
     assert_eq!(firefox_title(&mut state).await, "clicked-second");
 
+    let covered = "data:text/html,<body style='margin:0'><button onclick=\"document.title='hit'\" style='position:absolute;top:-100px;left:50px;width:200px;height:400px'>Target</button><div style='position:fixed;top:140px;left:50px;width:200px;height:20px'></div>";
+    firefox_open(&mut state, covered).await;
+    let target = firefox_ref(&mut state, "Target").await;
+    let refused = firefox_act(&mut state, "click", &target, json!({})).await;
+    assert!(
+        refused["error"].as_str().unwrap().contains("is covered by"),
+        "{refused}"
+    );
+    assert_ne!(firefox_title(&mut state).await, "hit");
+
     firefox_close(&mut state).await;
     tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
     assert!(!firefox_processes_using(tmp.path()));
@@ -14977,7 +14987,7 @@ async fn e2e_firefox_resolve_target() {
     tokio::time::sleep(tokio::time::Duration::from_millis(800)).await;
     let gone = resolve_target(&mut state, &go).await.unwrap_err();
     assert!(
-        gone.contains("Could not locate element with role=button name=Go"),
+        gone.contains("the page changed since the snapshot"),
         "{gone}"
     );
 
@@ -15041,6 +15051,178 @@ async fn e2e_firefox_allowed_domains_block_worker_and_websocket() {
         0,
         "blocked requests must never reach the disallowed origin"
     );
+
+    for url in [
+        format!("{}/blocked-open", fixture.other),
+        "file:///etc/hosts".to_string(),
+    ] {
+        let resp = firefox_command(
+            &mut state,
+            json!({ "id": "nav", "action": "navigate", "url": url }),
+        )
+        .await;
+        assert!(resp["error"].as_str().is_some(), "{resp}");
+        let resp = firefox_command(
+            &mut state,
+            json!({ "id": "tab", "action": "tab_new", "url": url }),
+        )
+        .await;
+        assert!(resp["error"].as_str().is_some(), "{resp}");
+    }
+    assert_eq!(fixture.hit_count("/blocked-open"), 0);
+    firefox_close(&mut state).await;
+}
+
+/// A save after visiting two origins keeps both origins' storage, and a load restores both.
+#[tokio::test]
+#[ignore = "requires FIREFOX_BIN; run serially"]
+async fn e2e_firefox_state_keeps_every_visited_origin() {
+    required_firefox_binary();
+    let tmp = tempfile::tempdir().unwrap();
+    let _env = firefox_test_environment(tmp.path());
+    let fixture = firefox_fixture().await;
+    let state_path = tmp.path().join("state.json").to_string_lossy().to_string();
+    let mut state = DaemonState::new();
+    launch_firefox(&mut state, json!({})).await;
+    for (url, value) in [(fixture.url.clone(), "A"), (fixture.other.clone(), "B")] {
+        firefox_open(&mut state, &url).await;
+        firefox_eval(
+            &mut state,
+            &format!("localStorage.setItem('k', '{value}'); 0"),
+        )
+        .await;
+    }
+    let saved = firefox_command(
+        &mut state,
+        json!({ "id": "save", "action": "state_save", "path": &state_path }),
+    )
+    .await;
+    assert_success(&saved);
+    firefox_close(&mut state).await;
+
+    launch_firefox(&mut state, json!({})).await;
+    let loaded = firefox_command(
+        &mut state,
+        json!({ "id": "load", "action": "state_load", "path": &state_path }),
+    )
+    .await;
+    assert_success(&loaded);
+    for (url, value) in [(fixture.url.clone(), "A"), (fixture.other.clone(), "B")] {
+        firefox_open(&mut state, &url).await;
+        assert_eq!(
+            firefox_eval(&mut state, "localStorage.getItem('k')").await,
+            json!(value)
+        );
+    }
+    firefox_close(&mut state).await;
+}
+
+/// Restore must not expose secrets to page hooks, including after a cross-origin redirect.
+#[tokio::test]
+#[ignore = "requires FIREFOX_BIN; run serially"]
+async fn e2e_firefox_state_restore_isolated_from_page_hooks() {
+    required_firefox_binary();
+    let tmp = tempfile::tempdir().unwrap();
+    let _env = firefox_test_environment(tmp.path());
+    let fixture = firefox_fixture().await;
+    let path = tmp.path().join("state.json");
+    let origin = fixture.url.trim_end_matches('/');
+    std::fs::write(
+        &path,
+        json!({
+            "cookies": [],
+            "origins": [{
+                "origin": origin,
+                "localStorage": [{"name": "token", "value": "synthetic-local-secret"}],
+                "sessionStorage": [{"name": "token", "value": "synthetic-session-secret"}]
+            }]
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let hostile_page = r#"<!doctype html><script>
+        window.stolen = [];
+        const parse = JSON.parse;
+        JSON.parse = function(payload) {
+            window.stolen.push(payload);
+            return parse(payload);
+        };
+        const setItem = Storage.prototype.setItem;
+        Storage.prototype.setItem = function(key, value) {
+            window.stolen.push(value);
+            return setItem.call(this, key, value);
+        };
+        window.hooksInstalled = true;
+    </script>"#;
+    let mut state = DaemonState::new();
+    launch_firefox(&mut state, json!({})).await;
+
+    for redirect in [false, true] {
+        assert_success(
+            &firefox_command(&mut state, json!({"id": "unroute", "action": "unroute"})).await,
+        );
+        let destination = format!("{}/restore-hook.html", fixture.other);
+        let response = if redirect {
+            json!({"status": 302, "headers": {"Location": destination}, "body": ""})
+        } else {
+            json!({"contentType": "text/html", "body": hostile_page})
+        };
+        assert_success(
+            &firefox_command(
+                &mut state,
+                json!({
+                    "id": "route-origin", "action": "route", "url": fixture.url,
+                    "response": response
+                }),
+            )
+            .await,
+        );
+        assert_success(
+            &firefox_command(
+                &mut state,
+                json!({
+                    "id": "route-destination", "action": "route", "url": destination,
+                    "response": {"contentType": "text/html", "body": hostile_page}
+                }),
+            )
+            .await,
+        );
+
+        let loaded = firefox_command(
+            &mut state,
+            json!({
+                "id": "load", "action": "state_load", "path": path.to_str().unwrap()
+            }),
+        )
+        .await;
+        if redirect {
+            assert_eq!(loaded["success"], false, "{loaded}");
+            assert!(
+                loaded["error"].as_str().unwrap().contains("landed on"),
+                "{loaded}"
+            );
+        } else {
+            assert_success(&loaded);
+        }
+        assert_eq!(
+            firefox_eval(&mut state, "window.hooksInstalled").await,
+            json!(true)
+        );
+        assert_eq!(firefox_eval(&mut state, "window.stolen").await, json!([]));
+        let storage = firefox_eval(
+            &mut state,
+            "[localStorage.getItem('token'), sessionStorage.getItem('token')]",
+        )
+        .await;
+        assert_eq!(
+            storage,
+            if redirect {
+                json!([null, null])
+            } else {
+                json!(["synthetic-local-secret", "synthetic-session-secret"])
+            }
+        );
+    }
     firefox_close(&mut state).await;
 }
 

@@ -130,6 +130,8 @@ pub struct NetContext {
     /// Proxy credential attempts per request id; a request gets two before the challenge is cancelled.
     pub proxy_auth_requests: Arc<RwLock<HashMap<String, u8>>>,
     pub headers: Arc<RwLock<HashMap<String, String>>>,
+    /// Contexts whose requests are answered with a blank page instead of reaching the network.
+    pub blank_contexts: Arc<RwLock<std::collections::HashSet<String>>>,
 }
 
 impl NetContext {
@@ -245,7 +247,7 @@ async fn resolve(bidi: Arc<BidiClient>, net: NetContext, event: Value) {
     let id = ev.request.request.clone();
     let (result, fallback, fallback_params) = match event["method"].as_str() {
         Some("network.beforeRequestSent") => (
-            before_request(&bidi, &net, &ev.request).await,
+            before_request(&bidi, &net, &ev.request, ev.context.as_deref()).await,
             "network.failRequest",
             json!({"request": id}),
         ),
@@ -265,10 +267,15 @@ async fn before_request(
     bidi: &BidiClient,
     net: &NetContext,
     request: &RequestData,
+    context: Option<&str>,
 ) -> Result<(), String> {
     let id = request.request.as_str();
     let url = request.url.as_str();
-    let decision = {
+    let blank = match context {
+        Some(c) => net.blank_contexts.read().await.contains(c),
+        None => false,
+    };
+    let mut decision = {
         let mut extra = net.headers.read().await.clone();
         let origin = url::Url::parse(url)
             .ok()
@@ -295,6 +302,13 @@ async fn before_request(
             &origin_headers,
         )
     };
+    if blank && !matches!(decision, NetworkDecision::Fail | NetworkDecision::Abort) {
+        decision = NetworkDecision::Fulfill {
+            status: 200,
+            headers: vec![("Content-Type".to_string(), "text/html".to_string())],
+            body: "<html></html>".to_string(),
+        };
+    }
     match decision {
         NetworkDecision::Fail | NetworkDecision::Abort => {
             bidi.send("network.failRequest", json!({"request": id}))

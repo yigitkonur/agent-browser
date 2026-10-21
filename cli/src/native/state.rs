@@ -384,6 +384,27 @@ pub async fn save_auto_state_transactional(
     session_id_str: &str,
     visited_origins: &HashSet<String>,
 ) -> Result<String, String> {
+    let (final_path, candidate_json_path) = auto_state_paths(session_name, session_id_str)?;
+    let candidate_arg = candidate_json_path.to_string_lossy().to_string();
+
+    let candidate_path = save_state(
+        client,
+        session_id,
+        Some(&candidate_arg),
+        Some(session_name),
+        session_id_str,
+        visited_origins,
+    )
+    .await?;
+
+    promote_auto_state_candidate(&candidate_path, &final_path)
+}
+
+/// Returns the final auto-state path for a session and the candidate path it is written to first.
+pub(crate) fn auto_state_paths(
+    session_name: &str,
+    session_id_str: &str,
+) -> Result<(PathBuf, PathBuf), String> {
     if !is_valid_session_name(session_name) {
         return Err(session_name_error(session_name));
     }
@@ -413,27 +434,23 @@ pub async fn save_auto_state_transactional(
         base_name,
         std::process::id()
     ));
-    let candidate_arg = candidate_json_path.to_string_lossy().to_string();
+    Ok((final_path, candidate_json_path))
+}
 
-    let candidate_path = save_state(
-        client,
-        session_id,
-        Some(&candidate_arg),
-        Some(session_name),
-        session_id_str,
-        visited_origins,
-    )
-    .await?;
-
-    if let Err(err) = validate_state_file(&candidate_path) {
-        let _ = fs::remove_file(&candidate_path);
+/// Validates a fully written candidate state file, then swaps it in for the last good file, rolling back on failure.
+pub(crate) fn promote_auto_state_candidate(
+    candidate_path: &str,
+    final_path: &std::path::Path,
+) -> Result<String, String> {
+    if let Err(err) = validate_state_file(candidate_path) {
+        let _ = fs::remove_file(candidate_path);
         return Err(err);
     }
 
     let previous_path = PathBuf::from(format!("{}.previous", final_path.to_string_lossy()));
     if final_path.exists() {
         let _ = fs::remove_file(&previous_path);
-        fs::rename(&final_path, &previous_path).map_err(|e| {
+        fs::rename(final_path, &previous_path).map_err(|e| {
             format!(
                 "Failed to rotate previous state {} to {}: {}",
                 final_path.display(),
@@ -443,10 +460,10 @@ pub async fn save_auto_state_transactional(
         })?;
     }
 
-    let candidate = PathBuf::from(&candidate_path);
-    if let Err(err) = fs::rename(&candidate, &final_path) {
+    let candidate = PathBuf::from(candidate_path);
+    if let Err(err) = fs::rename(&candidate, final_path) {
         if previous_path.exists() && !final_path.exists() {
-            let _ = fs::rename(&previous_path, &final_path);
+            let _ = fs::rename(&previous_path, final_path);
         }
         return Err(format!(
             "Failed to promote state {} to {}: {}",

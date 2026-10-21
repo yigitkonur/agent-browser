@@ -20,14 +20,15 @@ const SETTLE_JS: &str =
     "() => new Promise(r => requestAnimationFrame(() => requestAnimationFrame(() => r(0))))";
 
 /// Batch-resolves a pruned `[selector, role, children]` tree to `[node, contentWindow, inShadowRoot]` triples in document order.
-/// Children of an open shadow host resolve inside its shadow root first.
+/// Children of an open shadow host search its shadow root and the outer roots; a selector matching in more than one root is left unbound.
 const RESOLVE_JS: &str = r#"(tree) => {
   const out = [];
   const find = (roots, sel) => {
+    let hit = null;
     for (const r of roots) {
-      try { const e = r.querySelector(sel); if (e) return e; } catch (_) {}
+      try { const e = r.querySelector(sel); if (e) { if (hit) return null; hit = e; } } catch (_) {}
     }
-    return null;
+    return hit;
   };
   const walk = ([sel, role, kids], roots) => {
     const el = role === 'document' ? roots[0] : sel && !sel.endsWith('#text') ? find(roots, sel) : null;

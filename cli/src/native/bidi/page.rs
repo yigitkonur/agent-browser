@@ -50,6 +50,9 @@ pub async fn navigate(cmd: &Value, state: &mut DaemonState) -> Result<Value, Str
         Some("none") => "none",
         _ => "complete",
     };
+    if let Some(filter) = state.domain_filter.read().await.as_ref() {
+        filter.check_url(url)?;
+    }
     network::set_origin_headers(cmd, url, state).await?;
     state.ref_map.invalidate_all_documents();
     state.active_frame_id = None;
@@ -74,6 +77,7 @@ pub async fn navigate(cmd: &Value, state: &mut DaemonState) -> Result<Value, Str
     if let Some(msg) = neterror_message(landed) {
         return Err(format!("Navigation failed: {msg}"));
     }
+    ff.note_visit(landed);
     let title = ff.eval("document.title").await.unwrap_or(Value::Null);
     Ok(json!({ "url": landed, "title": title, "targetId": context }))
 }
@@ -190,7 +194,7 @@ fn selector_check(selector: &str, state: &str) -> String {
 }
 
 /// Polls `expression` in the active context until it is truthy or the timeout expires.
-async fn poll_until_true(
+pub(crate) async fn poll_until_true(
     ff: &FirefoxSession,
     expression: &str,
     timeout_ms: u64,

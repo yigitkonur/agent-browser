@@ -2,10 +2,9 @@ use serde_json::{json, Value};
 
 use crate::native::interaction::{char_to_key_info, key_text, named_key_info};
 
-/// Target of a pointer action: a shared element id or a viewport position.
+/// Target of a pointer action: a viewport position.
 #[derive(Clone, Debug)]
 pub(crate) enum Origin {
-    Element(String),
     Viewport { x: f64, y: f64 },
 }
 
@@ -207,11 +206,6 @@ fn pointer_move(origin: &Origin) -> Value {
 
 fn origin_json(origin: &Origin) -> (f64, f64, Value) {
     match origin {
-        Origin::Element(id) => (
-            0.0,
-            0.0,
-            json!({ "type": "element", "element": { "sharedId": id } }),
-        ),
         Origin::Viewport { x, y } => (*x, *y, json!("viewport")),
     }
 }
@@ -383,7 +377,7 @@ mod tests {
 
     #[test]
     fn touch_tap_uses_touch_pointer_type() {
-        let origin = Origin::Element("node-1".to_string());
+        let origin = Origin::Viewport { x: 1.0, y: 2.0 };
         let actions = touch_tap(&origin);
 
         assert_eq!(actions[0]["parameters"]["pointerType"], "touch");

@@ -19,7 +19,7 @@ fn node(target: &Target) -> Value {
     json!({ "sharedId": target.shared_id })
 }
 
-/// Scrolls `this` into view, then reports its center plus Chrome's actionability and blocker verdicts.
+/// Scrolls `this` into view, then reports its viewport-clipped, rounded center plus Chrome's actionability and blocker verdicts.
 fn prepare_js() -> String {
     format!(
         r#"function() {{
@@ -33,8 +33,10 @@ fn prepare_js() -> String {
                 el.scrollIntoView({{ block: 'center', inline: 'center', behavior: 'instant' }});
                 rect = el.getBoundingClientRect();
             }}
-            const x = rect.x + rect.width / 2;
-            const y = rect.y + rect.height / 2;
+            const vw = window.innerWidth || document.documentElement.clientWidth;
+            const vh = window.innerHeight || document.documentElement.clientHeight;
+            const x = Math.floor((Math.max(0, rect.left) + Math.min(vw, rect.right)) / 2);
+            const y = Math.floor((Math.max(0, rect.top) + Math.min(vh, rect.bottom)) / 2);
             const blockerAt = {BLOCKER_AT_JS};
             const notActionable = {ACTIONABILITY_JS};
             return {{ x: x, y: y, reason: notActionable(document, el, x, y), blocker: blockerAt(document, el, x, y) }};
@@ -104,14 +106,9 @@ pub async fn click(cmd: &Value, state: &mut DaemonState) -> Result<Value, String
         .and_then(Value::as_i64)
         .unwrap_or(1)
         .max(0) as u32;
-    let actions = pointer_click(
-        &Origin::Element(target.shared_id.clone()),
-        button,
-        click_count,
-    );
-
     let ff = session(state)?;
-    prepare(ff, &target, selector, true).await?;
+    let (x, y) = prepare(ff, &target, selector, true).await?;
+    let actions = pointer_click(&Origin::Viewport { x, y }, button, click_count);
     if perform(ff, &target.context, actions).await? {
         return Ok(json!({ "clicked": selector, "dialogOpened": true }));
     }
@@ -146,10 +143,9 @@ pub async fn dblclick(cmd: &Value, state: &mut DaemonState) -> Result<Value, Str
         .and_then(Value::as_str)
         .ok_or("Missing 'selector' parameter")?;
     let target = resolve_target(state, selector).await?;
-    let actions = pointer_click(&Origin::Element(target.shared_id.clone()), "left", 2);
-
     let ff = session(state)?;
-    prepare(ff, &target, selector, true).await?;
+    let (x, y) = prepare(ff, &target, selector, true).await?;
+    let actions = pointer_click(&Origin::Viewport { x, y }, "left", 2);
     if perform(ff, &target.context, actions).await? {
         return Ok(json!({ "clicked": selector, "dialogOpened": true }));
     }
@@ -163,10 +159,9 @@ pub async fn hover(cmd: &Value, state: &mut DaemonState) -> Result<Value, String
         .and_then(Value::as_str)
         .ok_or("Missing 'selector' parameter")?;
     let target = resolve_target(state, selector).await?;
-    let actions = pointer_hover(&Origin::Element(target.shared_id.clone()));
-
     let ff = session(state)?;
-    prepare(ff, &target, selector, true).await?;
+    let (x, y) = prepare(ff, &target, selector, true).await?;
+    let actions = pointer_hover(&Origin::Viewport { x, y });
     perform(ff, &target.context, actions).await?;
     Ok(json!({ "hovered": selector }))
 }
@@ -192,10 +187,9 @@ pub async fn tap(cmd: &Value, state: &mut DaemonState) -> Result<Value, String> 
         .and_then(Value::as_str)
         .ok_or("Missing 'selector' parameter")?;
     let target = resolve_target(state, selector).await?;
-    let actions = touch_tap(&Origin::Element(target.shared_id.clone()));
-
     let ff = session(state)?;
-    prepare(ff, &target, selector, true).await?;
+    let (x, y) = prepare(ff, &target, selector, true).await?;
+    let actions = touch_tap(&Origin::Viewport { x, y });
     perform(ff, &target.context, actions).await?;
     Ok(json!({ "tapped": selector }))
 }

@@ -55,6 +55,8 @@ pub struct FirefoxSession {
     pub intercepting: bool,
     /// Ids of requests that have started and not yet finished or failed.
     pub inflight: HashSet<String>,
+    /// Origins of pages this session navigated to, kept so state saves still cover them after the tab moves on.
+    pub visited_origins: HashSet<String>,
     pub(crate) dispatcher: Option<AbortOnDrop>,
 }
 
@@ -211,10 +213,21 @@ impl FirefoxSession {
             net,
             intercepting: false,
             inflight: HashSet::new(),
+            visited_origins: HashSet::new(),
             dispatcher,
         };
         let _ = emulation::apply_to_context(&session, &session.context).await;
         Ok(session)
+    }
+
+    /// Records the origin of a URL the session navigated to.
+    pub fn note_visit(&mut self, url: &str) {
+        if let Ok(parsed) = url::Url::parse(url) {
+            let origin = parsed.origin().ascii_serialization();
+            if origin != "null" {
+                self.visited_origins.insert(origin);
+            }
+        }
     }
 
     /// Returns the stable `t<N>` id for `context`, assigning the next id the first time it is seen.
@@ -458,6 +471,7 @@ pub(crate) mod tests {
             net: NetContext::default(),
             intercepting: false,
             inflight: HashSet::new(),
+            visited_origins: HashSet::new(),
             dispatcher: None,
         };
         (session, tx, calls)
@@ -584,6 +598,7 @@ pub(crate) mod tests {
             net: NetContext::default(),
             intercepting: false,
             inflight: HashSet::new(),
+            visited_origins: HashSet::new(),
             dispatcher: None,
         };
         (session, tx, calls, bidi_messages, rdp_messages)

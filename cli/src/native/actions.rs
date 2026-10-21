@@ -3773,7 +3773,10 @@ fn should_blank_existing_url(url: &str, filter: &DomainFilter) -> bool {
         .unwrap_or(false)
 }
 
-fn check_url_allowed_by_filter(filter: Option<&DomainFilter>, url: &str) -> Result<(), String> {
+pub(crate) fn check_url_allowed_by_filter(
+    filter: Option<&DomainFilter>,
+    url: &str,
+) -> Result<(), String> {
     if let Some(filter) = filter {
         if url != "about:blank" {
             filter.check_url(url)?;
@@ -4908,6 +4911,12 @@ fn no_xvfb_from_env() -> bool {
         .unwrap_or(false)
 }
 
+/// Records which engine the session now runs and persists it for later commands.
+fn set_engine(state: &mut DaemonState, engine: Option<&str>) {
+    state.engine = engine.unwrap_or("chrome").to_string();
+    write_engine_file(&state.session_id, &state.engine);
+}
+
 fn no_xvfb_from_launch_cmd(cmd: &Value) -> bool {
     cmd.get("noXvfb")
         .and_then(|v| v.as_bool())
@@ -4995,6 +5004,16 @@ async fn validate_restore_if_pending(state: &mut DaemonState) {
 }
 
 async fn validate_restored_state(state: &DaemonState) -> Result<(), String> {
+    if let Some(ff) = state.firefox.as_ref() {
+        return bidi::storage::validate_restore(
+            ff,
+            state.restore_check_url.as_deref(),
+            state.restore_check_text.as_deref(),
+            state.restore_check_fn.as_deref(),
+            state.default_timeout_ms.min(2_000),
+        )
+        .await;
+    }
     let Some(ref mgr) = state.browser else {
         return Ok(());
     };
@@ -5127,7 +5146,7 @@ pub(crate) async fn auto_save_restore_state(
     }
 
     let session_id = state.session_id.clone();
-    if let Some(ff) = state.firefox.as_ref() {
+    if let Some(ff) = state.firefox.as_mut() {
         return match bidi::storage::save_auto_state(ff, &session_name, &session_id).await {
             Ok(path) => {
                 state.restore_save_status = "saved".to_string();
@@ -5676,6 +5695,7 @@ async fn handle_launch_inner(cmd: &Value, state: &mut DaemonState) -> Result<Val
 
     if let Some(url) = cdp_url {
         state.reset_input_state();
+        set_engine(state, engine.as_deref());
         state.browser = Some(BrowserManager::connect_cdp_when_listening(url).await?);
         state.launch_hash = Some(new_hash);
         state.subscribe_to_browser_events();
@@ -5693,6 +5713,7 @@ async fn handle_launch_inner(cmd: &Value, state: &mut DaemonState) -> Result<Val
 
     if let Some(port) = cdp_port {
         state.reset_input_state();
+        set_engine(state, engine.as_deref());
         state.browser = Some(BrowserManager::connect_cdp_when_listening(&port.to_string()).await?);
         state.launch_hash = Some(new_hash);
         state.subscribe_to_browser_events();
@@ -5710,6 +5731,7 @@ async fn handle_launch_inner(cmd: &Value, state: &mut DaemonState) -> Result<Val
 
     if auto_connect {
         state.reset_input_state();
+        set_engine(state, engine.as_deref());
         state.browser = Some(BrowserManager::connect_auto().await?);
         if !apply_tab_binding_on_attach_or_rollback(state).await? {
             if let Err(e) = open_fresh_tab_for_auto_connect(state).await {
@@ -5776,6 +5798,7 @@ async fn handle_launch_inner(cmd: &Value, state: &mut DaemonState) -> Result<Val
                 {
                     Ok(mgr) => {
                         state.reset_input_state();
+                        set_engine(state, engine.as_deref());
                         state.browser = Some(mgr);
                         state.launch_hash = Some(new_hash);
                         state.subscribe_to_browser_events();
