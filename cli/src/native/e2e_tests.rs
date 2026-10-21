@@ -14398,6 +14398,16 @@ fn firefox_serve(
             let head = String::from_utf8_lossy(&request[..n]);
             let path = head.split_whitespace().nth(1).unwrap_or("/").to_string();
             hits.lock().unwrap().push(format!("{port}{path}"));
+            if head.to_ascii_lowercase().contains("\r\nauthorization:") {
+                hits.lock()
+                    .unwrap()
+                    .push(format!("{port}{path}#authorization"));
+            }
+            let status = if path == "/auth" {
+                "401 Unauthorized"
+            } else {
+                "200 OK"
+            };
             let (content_type, extra, body) = match path.as_str() {
                 "/" => (
                     "text/html; charset=utf-8",
@@ -14420,6 +14430,11 @@ fn firefox_serve(
                     include_str!("test_fixtures/firefox_forms_frame.html").to_string(),
                 ),
                 "/api" => ("text/plain", "", "real".to_string()),
+                "/auth" => (
+                    "text/plain",
+                    "WWW-Authenticate: Basic realm=\"origin\"\r\n",
+                    "denied".to_string(),
+                ),
                 "/download.txt" => (
                     "text/plain",
                     "Content-Disposition: attachment; filename=\"download.txt\"\r\n",
@@ -14428,7 +14443,7 @@ fn firefox_serve(
                 _ => ("text/plain", "", "ok".to_string()),
             };
             let response = format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\n{extra}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\n{extra}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
                 body.len()
             );
             let _ = stream.write_all(response.as_bytes()).await;
@@ -15023,6 +15038,35 @@ async fn e2e_firefox_allowed_domains_block_worker_and_websocket() {
             + fixture.hit_count(&format!("{other_port}/ws")),
         0,
         "blocked requests must never reach the disallowed origin"
+    );
+    firefox_close(&mut state).await;
+}
+
+/// PR3: proxy credentials are never sent to an origin that answers 401.
+#[tokio::test]
+#[ignore = "requires FIREFOX_BIN; run serially"]
+async fn e2e_firefox_proxy_credentials_not_sent_to_origin() {
+    required_firefox_binary();
+    let tmp = tempfile::tempdir().unwrap();
+    let _env = firefox_test_environment(tmp.path());
+    let fixture = firefox_fixture().await;
+    let mut state = DaemonState::new();
+    launch_firefox(
+        &mut state,
+        json!({ "proxy": {
+            "server": "http://127.0.0.1:9",
+            "bypass": "localhost,127.0.0.1",
+            "username": "proxy-user",
+            "password": "proxy-pass",
+        } }),
+    )
+    .await;
+    firefox_open(&mut state, &format!("{}auth", fixture.url)).await;
+    assert!(fixture.hit_count("/auth") > 0, "origin must be reached");
+    assert_eq!(
+        fixture.hit_count("#authorization"),
+        0,
+        "proxy credentials must not reach the origin"
     );
     firefox_close(&mut state).await;
 }

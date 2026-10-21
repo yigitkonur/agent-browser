@@ -5298,6 +5298,17 @@ async fn launch_firefox(
         auto_connect,
         provider.as_deref(),
     )?;
+    ensure_allowed_domains_supported_for_launch(AllowedDomainsLaunchSupport {
+        allowed_domains: &allowed_domains,
+        cdp_url: None,
+        cdp_port: None,
+        auto_connect: false,
+        profile: None,
+        provider_name: None,
+        args: &[],
+        restore_key: state.session_name.as_deref(),
+        storage_state: options.storage_state.as_deref(),
+    })?;
     options.restrict_webrtc = !allowed_domains.is_empty();
     let hash = launch_hash(
         &options,
@@ -5326,7 +5337,11 @@ async fn launch_firefox(
     let net = firefox::network::NetContext::from_state(state);
     let mut session =
         firefox::session::FirefoxSession::launch(&options, net, state.auto_dialog).await?;
-    if !allowed_domains.is_empty() || state.proxy_credentials.read().await.is_some() {
+    if !allowed_domains.is_empty()
+        || state.proxy_credentials.read().await.is_some()
+        || !state.routes.read().await.is_empty()
+        || !state.origin_headers.read().await.is_empty()
+    {
         firefox::network::ensure_intercept(&mut session).await?;
     }
     state.engine = "firefox".to_string();
@@ -19615,6 +19630,27 @@ mod firefox_routing_tests {
             .await
             .unwrap();
         assert_eq!(r["reused"], true);
+    }
+
+    #[tokio::test]
+    async fn implicit_launch_rejects_allowed_domains_with_a_session_name() {
+        let _guard = clean_env();
+        let (mut state, _calls) = firefox_state().await;
+        state.session_name = Some("k".into());
+        let e = launch_firefox(
+            &mut state,
+            launch_options_from_env(),
+            None,
+            false,
+            None,
+            vec!["a.test".into()],
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            e.contains("--allowed-domains") && e.contains("--restore"),
+            "{e}"
+        );
     }
 
     #[tokio::test]

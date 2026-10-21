@@ -246,7 +246,7 @@ async fn resolve(bidi: Arc<BidiClient>, net: NetContext, event: Value) {
             json!({"request": id}),
         ),
         Some("network.authRequired") => (
-            auth_required(&bidi, &net, &id).await,
+            auth_required(&bidi, &net, &id, &event["params"]).await,
             "network.continueWithAuth",
             json!({"request": id, "action": "cancel"}),
         ),
@@ -271,6 +271,7 @@ async fn before_request(
             .map(|u| u.origin().ascii_serialization())
             .unwrap_or_default();
         if let Some(scoped) = net.origin_headers.read().await.get(&origin) {
+            extra.retain(|name, _| !scoped.keys().any(|k| k.eq_ignore_ascii_case(name)));
             extra.extend(scoped.clone());
         }
         let origin_headers = if extra.is_empty() {
@@ -323,8 +324,19 @@ async fn before_request(
     Ok(())
 }
 
-async fn auth_required(bidi: &BidiClient, net: &NetContext, id: &str) -> Result<(), String> {
-    let params = match net.proxy_credentials.read().await.clone() {
+/// Answers an auth challenge; proxy credentials go only to proxy (407) challenges, never to origins.
+async fn auth_required(
+    bidi: &BidiClient,
+    net: &NetContext,
+    id: &str,
+    event: &Value,
+) -> Result<(), String> {
+    let credentials = if event["response"]["status"] == 407 {
+        net.proxy_credentials.read().await.clone()
+    } else {
+        None
+    };
+    let params = match credentials {
         Some((username, password)) => json!({
             "request": id,
             "action": "provideCredentials",
@@ -675,6 +687,27 @@ pub async fn request_detail(cmd: &Value, state: &mut DaemonState) -> Result<Valu
     Ok(result)
 }
 
+/// True when `context` is the active tab's top-level context or one of its frames.
+async fn in_active_tab(ff: &FirefoxSession, context: &str) -> bool {
+    fn contains(node: &Value, context: &str) -> bool {
+        node["context"] == context
+            || node["children"]
+                .as_array()
+                .is_some_and(|c| c.iter().any(|n| contains(n, context)))
+    }
+    if context == ff.top_context {
+        return true;
+    }
+    ff.bidi
+        .send("browsingContext.getTree", json!({"root": ff.top_context}))
+        .await
+        .is_ok_and(|tree| {
+            tree["contexts"]
+                .as_array()
+                .is_some_and(|c| c.iter().any(|n| contains(n, context)))
+        })
+}
+
 /// `responsebody`: waits for the next response whose URL contains the pattern and returns its body.
 pub async fn responsebody(cmd: &Value, state: &mut DaemonState) -> Result<Value, String> {
     let pattern = cmd
@@ -700,6 +733,7 @@ pub async fn responsebody(cmd: &Value, state: &mut DaemonState) -> Result<Value,
             && p["response"]["url"]
                 .as_str()
                 .is_some_and(|u| u.contains(pattern))
+            && in_active_tab(ff, p["context"].as_str().unwrap_or("")).await
         {
             let (body, _) = response_data(&ff.bidi, request_id(p)).await?;
             return Ok(json!({
@@ -725,15 +759,16 @@ pub async fn har_start(cmd: &Value, state: &mut DaemonState) -> Result<Value, St
     Ok(json!({ "started": true }))
 }
 
-/// Waits for the next finished download and returns its file path when Firefox reports one.
+/// Waits for the download that starts in one of `contexts` (any context when empty) and returns its file path when Firefox reports one.
 async fn wait_download(
     rx: &mut broadcast::Receiver<Value>,
     timeout_ms: u64,
     dir: Option<&std::path::Path>,
+    contexts: &[&str],
     timeout_error: &str,
 ) -> Result<Option<String>, String> {
     let deadline = tokio::time::Instant::now() + Duration::from_millis(timeout_ms);
-    let mut suggested: Option<String> = None;
+    let mut tracked: Option<(Value, Option<String>)> = None;
     loop {
         let event = match tokio::time::timeout_at(deadline, rx.recv()).await {
             Ok(Ok(event)) => event,
@@ -742,18 +777,28 @@ async fn wait_download(
             Err(_) => return Err(timeout_error.to_string()),
         };
         let p = &event["params"];
-        match event["method"].as_str() {
-            Some("browsingContext.downloadWillBegin") => {
-                suggested = p["suggestedFilename"].as_str().map(String::from);
+        match (event["method"].as_str(), &tracked) {
+            (Some("browsingContext.downloadWillBegin"), None)
+                if contexts.is_empty() || contexts.iter().any(|c| p["context"] == *c) =>
+            {
+                tracked = Some((
+                    p["navigation"].clone(),
+                    p["suggestedFilename"].as_str().map(String::from),
+                ));
             }
-            Some("browsingContext.downloadEnd") if p["status"] == "canceled" => {
-                return Err("Download was canceled".to_string());
-            }
-            Some("browsingContext.downloadEnd") => {
-                return Ok(p["filepath"]
-                    .as_str()
-                    .map(String::from)
-                    .or_else(|| Some(dir?.join(suggested?).to_string_lossy().into_owned())));
+            (Some("browsingContext.downloadEnd"), Some((id, suggested)))
+                if p["navigation"] == *id =>
+            {
+                if p["status"] == "canceled" {
+                    return Err("Download was canceled".to_string());
+                }
+                return Ok(p["filepath"].as_str().map(String::from).or_else(|| {
+                    Some(
+                        dir?.join(suggested.as_deref()?)
+                            .to_string_lossy()
+                            .into_owned(),
+                    )
+                }));
             }
             _ => {}
         }
@@ -781,18 +826,25 @@ pub async fn download(cmd: &Value, state: &mut DaemonState) -> Result<Value, Str
         )
         .await?;
     let this = json!({"sharedId": target.shared_id});
-    ff.bidi
-        .call_function(
+    let clicked = ff
+        .race_prompt(
             &target.context,
-            "function() { this.click(); return true; }",
-            Some(this),
-            vec![],
+            ff.bidi.call_function(
+                &target.context,
+                "function() { this.click(); return true; }",
+                Some(this),
+                vec![],
+            ),
         )
         .await?;
+    if clicked.is_none() {
+        return Ok(json!({ "clicked": selector, "dialogOpened": true }));
+    }
     let saved = wait_download(
         &mut rx,
         DOWNLOAD_TIMEOUT_MS,
         Some(&dir),
+        &[target.context.as_str(), ff.top_context.as_str()],
         "Timeout waiting for download to complete",
     )
     .await?;
@@ -816,7 +868,14 @@ pub async fn waitfordownload(cmd: &Value, state: &mut DaemonState) -> Result<Val
         .and_then(Value::as_u64)
         .unwrap_or(state.default_timeout_ms);
     let mut rx = session(state)?.bidi.subscribe();
-    let saved = wait_download(&mut rx, timeout_ms, None, "Timeout waiting for download").await?;
+    let saved = wait_download(
+        &mut rx,
+        timeout_ms,
+        None,
+        &[],
+        "Timeout waiting for download",
+    )
+    .await?;
     let path = cmd
         .get("path")
         .and_then(Value::as_str)
@@ -843,6 +902,35 @@ mod tests {
             abort: false,
             resource_types: Vec::new(),
         }
+    }
+
+    #[tokio::test]
+    async fn wait_download_ignores_other_downloads() {
+        let (tx, mut rx) = broadcast::channel(16);
+        let send = |method: &str, params: Value| {
+            tx.send(json!({"method": method, "params": params}))
+                .unwrap();
+        };
+        send(
+            "browsingContext.downloadWillBegin",
+            json!({"context": "other", "navigation": "n1", "suggestedFilename": "a.txt"}),
+        );
+        send(
+            "browsingContext.downloadWillBegin",
+            json!({"context": "mine", "navigation": "n2", "suggestedFilename": "b.txt"}),
+        );
+        send(
+            "browsingContext.downloadEnd",
+            json!({"navigation": "n1", "status": "canceled"}),
+        );
+        send(
+            "browsingContext.downloadEnd",
+            json!({"navigation": "n2", "status": "complete", "filepath": "/tmp/b.txt"}),
+        );
+        let saved = wait_download(&mut rx, 1000, None, &["mine"], "timeout")
+            .await
+            .unwrap();
+        assert_eq!(saved.as_deref(), Some("/tmp/b.txt"));
     }
 
     #[test]

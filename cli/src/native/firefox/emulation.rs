@@ -1,7 +1,6 @@
 use serde_json::{json, Map, Value};
 
 use super::actions::session;
-use super::rdp::RdpClient;
 use super::session::FirefoxSession;
 use crate::native::actions::{device_preset, DaemonState, EmulatedMedia};
 
@@ -172,9 +171,14 @@ async fn send_scoped(
 
 /// Applies color scheme and print media to the selected tab through its DevTools configuration actor.
 pub(crate) async fn update_tab_configuration(
-    rdp: &RdpClient,
+    ff: &FirefoxSession,
+    context: &str,
     config: &Value,
 ) -> Result<(), String> {
+    ff.bidi
+        .send("browsingContext.activate", json!({"context": context}))
+        .await?;
+    let rdp = &ff.rdp;
     let tabs = rdp.request("root", "listTabs", json!({})).await?;
     let tab = tabs["tabs"]
         .as_array()
@@ -228,7 +232,7 @@ pub async fn apply_to_context(ff: &FirefoxSession, context: &str) -> Result<(), 
         send_scoped(ff, context, self::offline(offline)).await?;
     }
     if let Some(ref media) = settings.media {
-        update_tab_configuration(&ff.rdp, &media_config(media)?).await?;
+        update_tab_configuration(ff, context, &media_config(media)?).await?;
     }
     Ok(())
 }
@@ -242,7 +246,7 @@ pub async fn set_viewport(cmd: &Value, state: &mut DaemonState) -> Result<Value,
         .and_then(Value::as_f64)
         .unwrap_or(1.0);
     let mobile = cmd.get("mobile").and_then(Value::as_bool).unwrap_or(false);
-    let context = session(state)?.context.clone();
+    let context = session(state)?.top_context.clone();
     send_scoped(session(state)?, &context, viewport(width, height, scale)).await?;
     session(state)?.emulation.viewport = Some((width, height, scale));
     state.viewport = Some((width as i32, height as i32, scale, mobile));
@@ -266,7 +270,7 @@ pub async fn set_device(cmd: &Value, state: &mut DaemonState) -> Result<Value, S
         .ok_or("Missing 'name' parameter")?;
     let preset = device_preset(name)?;
     let commands = device(name)?;
-    let context = session(state)?.context.clone();
+    let context = session(state)?.top_context.clone();
     for command in commands {
         send_scoped(session(state)?, &context, command).await?;
     }
@@ -305,7 +309,7 @@ pub async fn set_user_agent(cmd: &Value, state: &mut DaemonState) -> Result<Valu
         .get("userAgent")
         .and_then(Value::as_str)
         .ok_or("Missing 'userAgent' parameter")?;
-    let context = session(state)?.context.clone();
+    let context = session(state)?.top_context.clone();
     send_scoped(session(state)?, &context, self::user_agent(user_agent)).await?;
     session(state)?.emulation.user_agent = Some(user_agent.to_string());
     Ok(json!({ "userAgent": user_agent }))
@@ -317,7 +321,7 @@ pub async fn set_locale(cmd: &Value, state: &mut DaemonState) -> Result<Value, S
         .get("locale")
         .and_then(Value::as_str)
         .ok_or("Missing 'locale' parameter")?;
-    let context = session(state)?.context.clone();
+    let context = session(state)?.top_context.clone();
     send_scoped(session(state)?, &context, self::locale(locale)).await?;
     session(state)?.emulation.locale = Some(locale.to_string());
     Ok(json!({ "locale": locale }))
@@ -330,7 +334,7 @@ pub async fn set_timezone(cmd: &Value, state: &mut DaemonState) -> Result<Value,
         .or_else(|| cmd.get("timezone"))
         .and_then(Value::as_str)
         .ok_or("Missing 'timezoneId' parameter")?;
-    let context = session(state)?.context.clone();
+    let context = session(state)?.top_context.clone();
     send_scoped(session(state)?, &context, self::timezone(timezone)).await?;
     session(state)?.emulation.timezone = Some(timezone.to_string());
     Ok(json!({ "timezoneId": timezone }))
@@ -347,7 +351,7 @@ pub async fn set_geolocation(cmd: &Value, state: &mut DaemonState) -> Result<Val
         .and_then(Value::as_f64)
         .ok_or("Missing 'longitude' parameter")?;
     let accuracy = cmd.get("accuracy").and_then(Value::as_f64);
-    let context = session(state)?.context.clone();
+    let context = session(state)?.top_context.clone();
     send_scoped(
         session(state)?,
         &context,
@@ -402,7 +406,7 @@ fn page_origin(url: &str) -> Result<String, String> {
 /// Toggles offline mode for the active tab and any tab opened later.
 pub async fn set_offline(cmd: &Value, state: &mut DaemonState) -> Result<Value, String> {
     let offline = cmd.get("offline").and_then(Value::as_bool).unwrap_or(true);
-    let context = session(state)?.context.clone();
+    let context = session(state)?.top_context.clone();
     send_scoped(session(state)?, &context, self::offline(offline)).await?;
     session(state)?.emulation.offline = Some(offline);
     Ok(json!({ "offline": offline }))
@@ -414,7 +418,8 @@ pub async fn set_media(cmd: &Value, state: &mut DaemonState) -> Result<Value, St
     let config = media_config(&media)?;
     {
         let ff = session(state)?;
-        update_tab_configuration(&ff.rdp, &config).await?;
+        let context = ff.top_context.clone();
+        update_tab_configuration(ff, &context, &config).await?;
     }
     session(state)?.emulation.media = Some(media);
     Ok(json!({ "set": true }))
