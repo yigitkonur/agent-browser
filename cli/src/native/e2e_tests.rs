@@ -14777,6 +14777,36 @@ async fn e2e_firefox_dialog() {
     firefox_close(&mut state).await;
 }
 
+/// Alerts and beforeunload prompts are auto-accepted, so they never block the next command.
+#[tokio::test]
+#[ignore = "requires FIREFOX_BIN; run serially"]
+async fn e2e_firefox_auto_dialog() {
+    required_firefox_binary();
+    let tmp = tempfile::tempdir().unwrap();
+    let _env = firefox_test_environment(tmp.path());
+    let fixture = firefox_fixture().await;
+    let mut state = DaemonState::new();
+    launch_firefox(&mut state, json!({})).await;
+    firefox_open(&mut state, &fixture.url).await;
+
+    let alert = firefox_ref(&mut state, "Alert").await;
+    assert_success(&firefox_act(&mut state, "click", &alert, json!({})).await);
+    assert_eq!(firefox_eval(&mut state, "1 + 1").await, json!(2));
+
+    firefox_eval(&mut state, "window.onbeforeunload = () => 'leave?'").await;
+    firefox_open(&mut state, &fixture.other).await;
+    assert_eq!(firefox_eval(&mut state, "1 + 1").await, json!(2));
+
+    let status = firefox_command(
+        &mut state,
+        json!({ "id": "d", "action": "dialog", "response": "status" }),
+    )
+    .await;
+    assert_success(&status);
+    assert_eq!(get_data(&status)["hasDialog"], false);
+    firefox_close(&mut state).await;
+}
+
 /// PR2: refs inside a cross-origin iframe and an open shadow root are clickable.
 #[tokio::test]
 #[ignore = "requires FIREFOX_BIN; run serially"]
@@ -15488,6 +15518,31 @@ async fn e2e_firefox_launch_user_agent() {
 
 #[tokio::test]
 #[ignore = "requires FIREFOX_BIN; run serially"]
+async fn e2e_firefox_relaunch_keeps_engine_when_options_change() {
+    required_firefox_binary();
+    let tmp = tempfile::tempdir().unwrap();
+    let _env = firefox_test_environment(tmp.path());
+    let fixture = firefox_fixture().await;
+    let mut state = DaemonState::new();
+    launch_firefox(&mut state, json!({})).await;
+    firefox_open(&mut state, &fixture.url).await;
+    let relaunch = execute_command(
+        &json!({ "id": "relaunch", "action": "launch", "colorScheme": "dark" }),
+        &mut state,
+    )
+    .await;
+    assert_eq!(relaunch["success"], json!(true), "{relaunch}");
+    assert_eq!(state.engine, "firefox");
+    firefox_open(&mut state, &fixture.url).await;
+    assert_eq!(
+        firefox_eval(&mut state, "navigator.userAgent.includes('Firefox')").await,
+        json!(true)
+    );
+    firefox_close(&mut state).await;
+}
+
+#[tokio::test]
+#[ignore = "requires FIREFOX_BIN; run serially"]
 async fn e2e_firefox_full_page_screenshot_larger_than_64mb() {
     required_firefox_binary();
     let tmp = tempfile::tempdir().unwrap();
@@ -15514,37 +15569,6 @@ async fn e2e_firefox_full_page_screenshot_larger_than_64mb() {
     assert_eq!(shot["success"], json!(true), "{shot}");
     assert!(std::fs::metadata(&path).unwrap().len() > 48 * 1024 * 1024);
     assert_eq!(firefox_eval(&mut state, "1 + 1").await, json!(2));
-    firefox_close(&mut state).await;
-}
-
-/// Alerts and beforeunload prompts are auto-accepted, so they never block the next command.
-#[tokio::test]
-#[ignore = "requires FIREFOX_BIN; run serially"]
-async fn e2e_firefox_auto_dialog() {
-    required_firefox_binary();
-    let tmp = tempfile::tempdir().unwrap();
-    let _env = firefox_test_environment(tmp.path());
-    let fixture = firefox_fixture().await;
-    let mut state = DaemonState::new();
-    launch_firefox(&mut state, json!({})).await;
-    firefox_open(&mut state, &fixture.url).await;
-
-    assert_eq!(
-        firefox_eval(&mut state, "alert('Heads up'); 1").await,
-        json!(1)
-    );
-    assert_eq!(firefox_eval(&mut state, "1 + 1").await, json!(2));
-
-    firefox_eval(&mut state, "window.onbeforeunload = () => 'leave?'").await;
-    firefox_open(&mut state, &fixture.other).await;
-    assert_eq!(firefox_eval(&mut state, "1 + 1").await, json!(2));
-
-    state
-        .firefox
-        .as_mut()
-        .unwrap()
-        .drain_events(&mut state.pending_dialog);
-    assert!(state.pending_dialog.is_none());
     firefox_close(&mut state).await;
 }
 

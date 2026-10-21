@@ -5443,7 +5443,8 @@ async fn handle_launch_inner(cmd: &Value, state: &mut DaemonState) -> Result<Val
         .get("engine")
         .and_then(|v| v.as_str())
         .map(String::from)
-        .or_else(|| env::var("AGENT_BROWSER_ENGINE").ok());
+        .or_else(|| env::var("AGENT_BROWSER_ENGINE").ok())
+        .or_else(|| has_active_browser_session(state).then(|| state.engine.clone()));
     let profile = cmd
         .get("profile")
         .and_then(|v| v.as_str())
