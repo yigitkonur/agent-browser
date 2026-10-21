@@ -6216,11 +6216,9 @@ pub(crate) async fn handle_close(state: &mut DaemonState) -> Result<Value, Strin
 // Phase 2 handlers
 // ---------------------------------------------------------------------------
 
-async fn handle_snapshot(cmd: &Value, state: &mut DaemonState) -> Result<Value, String> {
-    let mgr = state.browser.as_ref().ok_or("Browser not launched")?;
-    let session_id = mgr.active_session_id()?.to_string();
-
-    let options = SnapshotOptions {
+/// Reads the snapshot flags (`selector`, `interactive`, `compact`, `maxDepth`, `urls`) from a command.
+pub(crate) fn snapshot_options(cmd: &Value) -> SnapshotOptions {
+    SnapshotOptions {
         selector: cmd
             .get("selector")
             .and_then(|v| v.as_str())
@@ -6238,7 +6236,14 @@ async fn handle_snapshot(cmd: &Value, state: &mut DaemonState) -> Result<Value, 
             .and_then(|v| v.as_u64())
             .map(|d| d as usize),
         urls: cmd.get("urls").and_then(|v| v.as_bool()).unwrap_or(false),
-    };
+    }
+}
+
+async fn handle_snapshot(cmd: &Value, state: &mut DaemonState) -> Result<Value, String> {
+    let mgr = state.browser.as_ref().ok_or("Browser not launched")?;
+    let session_id = mgr.active_session_id()?.to_string();
+
+    let options = snapshot_options(cmd);
 
     let previous_refs = state.ref_map.ref_ids();
     state.ref_map.begin_snapshot();
@@ -6253,7 +6258,19 @@ async fn handle_snapshot(cmd: &Value, state: &mut DaemonState) -> Result<Value, 
     .await?;
 
     let url = mgr.get_url().await.unwrap_or_default();
+    snapshot_response(cmd, state, session_id, &options, previous_refs, tree, url)
+}
 
+/// Builds the `snapshot` reply (refs, removed refs and the optional delta) from a rendered tree.
+pub(crate) fn snapshot_response(
+    cmd: &Value,
+    state: &mut DaemonState,
+    session_id: String,
+    options: &SnapshotOptions,
+    previous_refs: std::collections::HashSet<String>,
+    tree: String,
+    url: String,
+) -> Result<Value, String> {
     let refs: serde_json::Map<String, Value> = state
         .ref_map
         .entries_sorted()
@@ -7780,6 +7797,16 @@ async fn handle_diff_snapshot(cmd: &Value, state: &mut DaemonState) -> Result<Va
     )
     .await?;
 
+    diff_snapshot_response(cmd, state, current, current_ref_map)
+}
+
+/// Diffs a freshly rendered snapshot against the command's baseline and commits its ref map.
+pub(crate) fn diff_snapshot_response(
+    cmd: &Value,
+    state: &mut DaemonState,
+    current: String,
+    current_ref_map: RefMap,
+) -> Result<Value, String> {
     let baseline = cmd.get("baseline").and_then(|v| v.as_str());
 
     let baseline_text = match baseline {
@@ -19529,7 +19556,7 @@ mod firefox_routing_tests {
         let error = resp["error"].as_str().unwrap();
         assert!(error.contains("`trace_start` is Chrome-only"), "{error}");
         assert!(!error.contains("WebDriver backend"), "{error}");
-        let resp = execute_command(&json!({"id":"2","action":"snapshot"}), &mut state).await;
+        let resp = execute_command(&json!({"id":"2","action":"click"}), &mut state).await;
         assert!(resp["error"]
             .as_str()
             .unwrap()

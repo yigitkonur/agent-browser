@@ -19,6 +19,7 @@ use crate::test_utils::EnvGuard;
 use super::actions::{
     close_current_browser, execute_command, maybe_autosave_restore_state, DaemonState,
 };
+use super::firefox::target::{resolve_target, Target};
 
 fn assert_success(resp: &Value) {
     assert_eq!(
@@ -14696,6 +14697,120 @@ async fn e2e_firefox_iframe_and_shadow_root_refs() {
     assert_success(&firefox_act(&mut state, "click", &frame, json!({})).await);
     tokio::time::sleep(tokio::time::Duration::from_millis(300)).await;
     assert_eq!(firefox_title(&mut state).await, "frame-clicked");
+    firefox_close(&mut state).await;
+}
+
+async fn firefox_text_of(state: &mut DaemonState, target: &Target) -> String {
+    let ff = state.firefox.as_ref().unwrap();
+    let this = json!({ "sharedId": target.shared_id });
+    let text = ff
+        .bidi
+        .call_function(
+            &target.context,
+            "function() { return this.textContent; }",
+            Some(this),
+            vec![],
+        )
+        .await
+        .unwrap();
+    text.as_str().unwrap().to_string()
+}
+
+/// U5: refs, CSS and XPath resolve across shadow roots and frames; stale and recovery rules hold.
+#[tokio::test]
+#[ignore = "requires FIREFOX_BIN; run serially"]
+async fn e2e_firefox_resolve_target() {
+    required_firefox_binary();
+    let tmp = tempfile::tempdir().unwrap();
+    let _env = firefox_test_environment(tmp.path());
+    let fixture = firefox_fixture().await;
+    let mut state = DaemonState::new();
+    launch_firefox(&mut state, json!({})).await;
+    firefox_open(&mut state, &fixture.url).await;
+
+    let first = firefox_ref(&mut state, "First").await;
+    let second = firefox_ref(&mut state, "Second").await;
+    let go = firefox_ref(&mut state, "Go").await;
+    let shadow = firefox_ref(&mut state, "Shadow button").await;
+    let frame = firefox_ref(&mut state, "Frame button").await;
+    let top = state.firefox.as_ref().unwrap().context.clone();
+
+    for (selector, text) in [(&first, "First"), (&shadow, "Shadow button")] {
+        let target = resolve_target(&mut state, selector).await.unwrap();
+        assert_eq!(target.context, top);
+        assert_eq!(firefox_text_of(&mut state, &target).await, text);
+    }
+    let framed = resolve_target(&mut state, &frame).await.unwrap();
+    assert_ne!(
+        framed.context, top,
+        "cross-origin frame nodes live in their own context"
+    );
+    assert_eq!(firefox_text_of(&mut state, &framed).await, "Frame button");
+    let by_ref = resolve_target(&mut state, &go).await.unwrap();
+    assert_eq!(resolve_target(&mut state, "#go").await.unwrap(), by_ref);
+    assert_eq!(
+        resolve_target(&mut state, "xpath=//button[@id='go']")
+            .await
+            .unwrap(),
+        by_ref
+    );
+    let missing = resolve_target(&mut state, "#nope").await.unwrap_err();
+    assert_eq!(missing, "Element not found: #nope");
+
+    firefox_eval(
+        &mut state,
+        "document.getElementById('list').prepend(document.createElement('button')); 0",
+    )
+    .await;
+    assert_eq!(firefox_ref(&mut state, "First").await, first);
+    assert_eq!(firefox_ref(&mut state, "Second").await, second);
+
+    firefox_eval(
+        &mut state,
+        "document.getElementById('list').children[1].remove(); 0",
+    )
+    .await;
+    let stale = resolve_target(&mut state, &first).await.unwrap_err();
+    assert!(stale.contains("the ref is stale"), "{stale}");
+
+    firefox_eval(
+        &mut state,
+        "const b = document.createElement('button'); b.textContent = 'First'; document.getElementById('list').append(b); 0",
+    )
+    .await;
+    let recovered = resolve_target(&mut state, &first).await.unwrap();
+    assert_eq!(firefox_text_of(&mut state, &recovered).await, "First");
+    assert_eq!(resolve_target(&mut state, &first).await.unwrap(), recovered);
+
+    firefox_eval(
+        &mut state,
+        "document.body.insertAdjacentHTML('beforeend', '<p id=twins><button>Twin</button><button>Twin</button></p>'); 0",
+    )
+    .await;
+    let twin = firefox_ref(&mut state, "Twin").await;
+    firefox_eval(
+        &mut state,
+        "document.getElementById('twins').innerHTML = '<button>Twin</button>'; 0",
+    )
+    .await;
+    let refused = resolve_target(&mut state, &twin).await.unwrap_err();
+    assert!(
+        refused.contains("the snapshot had several matching elements"),
+        "{refused}"
+    );
+
+    firefox_eval(
+        &mut state,
+        &format!("location.assign('{}/frame.html'); 0", fixture.other),
+    )
+    .await;
+    tokio::time::sleep(tokio::time::Duration::from_millis(800)).await;
+    let gone = resolve_target(&mut state, &go).await.unwrap_err();
+    assert!(
+        gone.contains("Could not locate element with role=button name=Go"),
+        "{gone}"
+    );
+
     firefox_close(&mut state).await;
 }
 

@@ -749,8 +749,10 @@ fn finish_output(mut output: String, options: &SnapshotOptions) -> String {
 }
 
 /// Runs the shared tree, ref and render pipeline on prebuilt accessibility nodes.
+/// `urls` maps a node's `backend_d_o_m_node_id` to its link target and is used when `options.urls` is set.
 pub fn snapshot_from_ax_nodes(
     nodes: &[AXNode],
+    urls: &HashMap<i64, String>,
     options: &SnapshotOptions,
     ref_map: &mut RefMap,
     session_id: &str,
@@ -766,6 +768,14 @@ pub fn snapshot_from_ax_nodes(
         frame_id,
         document_is_known,
     );
+    if options.urls {
+        for node in tree_nodes
+            .iter_mut()
+            .filter(|n| n.role == "link" && n.has_ref)
+        {
+            node.url = node.backend_node_id.and_then(|id| urls.get(&id).cloned());
+        }
+    }
     let mut output = String::new();
     for &root in &roots {
         render_tree(&tree_nodes, root, 0, &mut output, options);

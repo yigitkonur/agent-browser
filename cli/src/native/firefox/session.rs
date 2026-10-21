@@ -34,6 +34,10 @@ pub struct FirefoxSession {
     next_tab_id: u32,
     /// Durable ref ids keyed by `(context, sharedId)`; reset when a document changes.
     pub refs: HashMap<(String, String), i64>,
+    pub next_node_id: i64,
+    pub frames: Option<super::snapshot::FrameWatch>,
+    /// Document node `sharedId` last snapshotted per context, used to reset `refs` on a new document.
+    pub documents: HashMap<String, String>,
     pub tab_labels: HashMap<String, String>,
     events: broadcast::Receiver<Value>,
 }
@@ -151,6 +155,9 @@ impl FirefoxSession {
             next_tab_id: 2,
             context,
             refs: HashMap::new(),
+            next_node_id: 0,
+            frames: None,
+            documents: HashMap::new(),
             tab_labels: HashMap::new(),
             events,
         })
@@ -343,6 +350,9 @@ pub(crate) mod tests {
             tab_ids: HashMap::from([("ctx-active".into(), 1)]),
             next_tab_id: 2,
             refs: HashMap::new(),
+            next_node_id: 0,
+            frames: None,
+            documents: HashMap::new(),
             tab_labels: HashMap::new(),
             events,
         };

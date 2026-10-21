@@ -11,3 +11,4 @@ pub mod session;
 pub mod snapshot;
 pub mod storage;
 pub mod tabs;
+pub mod target;

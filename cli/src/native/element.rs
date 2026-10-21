@@ -811,7 +811,7 @@ pub async fn resolve_element_object_id(
     Ok((object_id, session_id.to_string()))
 }
 
-const IS_CONNECTED_JS: &str = "function() { return this.isConnected; }";
+pub(crate) const IS_CONNECTED_JS: &str = "function() { return this.isConnected; }";
 
 /// Reports whether a resolved node has been removed from its document, releasing it if so.
 async fn is_detached(client: &CdpClient, session_id: &str, object_id: &str) -> bool {
@@ -949,7 +949,7 @@ pub(super) fn extract_ax_string(value: &Option<AXValue>) -> String {
 }
 
 /// Build a JS expression that finds a DOM element by CSS selector or XPath.
-fn build_find_element_js(selector: &str) -> String {
+pub(crate) fn build_find_element_js(selector: &str) -> String {
     build_find_element_js_in("document", selector)
 }
 

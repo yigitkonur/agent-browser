@@ -3,7 +3,7 @@
 use serde_json::Value;
 
 use super::session::FirefoxSession;
-use super::{capture, page, storage, tabs};
+use super::{capture, page, snapshot, storage, tabs};
 use crate::native::actions::{self as chrome, DaemonState};
 
 /// Actions that run on Firefox.
@@ -35,6 +35,8 @@ pub const SUPPORTED_ACTIONS: &[&str] = &[
     "state_load",
     "screenshot",
     "pdf",
+    "snapshot",
+    "diff_snapshot",
     "close",
     "confirm",
     "deny",
@@ -143,6 +145,8 @@ pub async fn execute(action: &str, cmd: &Value, state: &mut DaemonState) -> Resu
         "state_load" => storage::state_load(cmd, state).await,
         "screenshot" => capture::screenshot(cmd, state).await,
         "pdf" => capture::pdf(cmd, state).await,
+        "snapshot" => Box::pin(snapshot::snapshot(cmd, state)).await,
+        "diff_snapshot" => Box::pin(snapshot::diff_snapshot(cmd, state)).await,
         "close" => chrome::handle_close(state).await,
         "confirm" => chrome::handle_confirm(cmd, state).await,
         _ => chrome::handle_deny(cmd, state).await,
@@ -172,10 +176,8 @@ mod tests {
             let e = execute(action, &json!({}), &mut state).await.unwrap_err();
             assert!(e.contains(action) && e.contains("Chrome-only"), "{e}");
         }
-        let e = execute("snapshot", &json!({}), &mut state)
-            .await
-            .unwrap_err();
-        assert_eq!(e, "`snapshot` is not supported on Firefox");
+        let e = execute("click", &json!({}), &mut state).await.unwrap_err();
+        assert_eq!(e, "`click` is not supported on Firefox");
         assert!(state.firefox.is_none());
     }
 
