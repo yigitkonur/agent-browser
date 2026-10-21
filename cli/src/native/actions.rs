@@ -639,6 +639,7 @@ pub struct DaemonState {
     pub safari_driver: Option<safari::SafariDriverProcess>,
     pub webdriver_backend: Option<super::webdriver::backend::WebDriverBackend>,
     pub firefox: Option<firefox::session::FirefoxSession>,
+    pub firefox_poller: Option<firefox::stream::Poller>,
     pub backend_type: BackendType,
     pub ref_map: RefMap,
     /// Last delta snapshot per page session. Bounded to the currently tracked tabs.
@@ -816,6 +817,7 @@ impl DaemonState {
             safari_driver: None,
             webdriver_backend: None,
             firefox: None,
+            firefox_poller: None,
             backend_type: BackendType::Cdp,
             ref_map: RefMap::new(),
             snapshot_revisions: HashMap::new(),
@@ -1234,7 +1236,7 @@ impl DaemonState {
     }
 
     /// Update the stream server's CDP client slot when browser is set or cleared.
-    pub async fn update_stream_client(&self) {
+    pub async fn update_stream_client(&mut self) {
         if let Some(ref slot) = self.stream_client {
             let mut guard = slot.write().await;
             *guard = self.browser.as_ref().map(|m| Arc::clone(&m.client));
@@ -1245,7 +1247,22 @@ impl DaemonState {
                 .browser
                 .as_ref()
                 .and_then(|m| m.active_session_id().ok().map(|s| s.to_string()));
-            let connected = self.browser.is_some();
+            let connected = self.browser.is_some() || self.firefox.is_some();
+            let live = self
+                .firefox
+                .as_ref()
+                .map(|ff| firefox::stream::FirefoxLive {
+                    bidi: Arc::clone(&ff.bidi),
+                    context: ff.context.clone(),
+                });
+            self.firefox_poller = live.clone().map(|live| {
+                firefox::stream::spawn_poller(
+                    live,
+                    Arc::clone(server),
+                    self.pending_dialog.is_some(),
+                )
+            });
+            server.set_firefox_live(live).await;
             let sc = server.is_screencasting().await;
             let (vw, vh) = server.viewport().await;
             if let Some(ref mgr) = self.browser {
@@ -3200,7 +3217,16 @@ pub async fn execute_command(cmd: &Value, state: &mut DaemonState) -> Value {
     }
 
     let mut result = match action {
-        _ if firefox_routed => firefox::actions::execute(action, cmd, state).await,
+        _ if firefox_routed => {
+            let result = firefox::actions::execute(action, cmd, state).await;
+            if matches!(
+                action,
+                "tab_new" | "tab_switch" | "tab_close" | "window_new"
+            ) {
+                state.update_stream_client().await;
+            }
+            result
+        }
         "launch" => {
             let webmcp_enabled = cmd
                 .get("webmcp")
@@ -5351,6 +5377,7 @@ async fn launch_firefox(
     write_engine_file(&state.session_id, &state.engine);
     state.launch_hash = Some(hash);
     state.firefox = Some(session);
+    state.update_stream_client().await;
     try_auto_restore_state(state).await;
     load_storage_state_or_rollback(state, &storage_state).await?;
     Ok(json!({ "launched": true, "relaunchedBrowser": had_browser }))
@@ -9906,7 +9933,7 @@ async fn current_stream_status(state: &DaemonState) -> Value {
 
     let connected = match state.browser.as_ref() {
         Some(mgr) => mgr.is_connection_alive().await,
-        None => false,
+        None => state.firefox.is_some(),
     };
     let runtime_screencasting = match state.stream_server.as_ref() {
         Some(server) => server.is_screencasting().await,

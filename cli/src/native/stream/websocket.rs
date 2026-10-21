@@ -12,6 +12,7 @@ use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::WebSocketStream;
 
 use crate::native::cdp::client::CdpClient;
+use crate::native::firefox::stream::{self as firefox_stream, FirefoxLive};
 
 use super::http::handle_http_request;
 use super::{is_allowed_origin, timestamp_ms, IdleActivity, StreamFrame};
@@ -131,6 +132,7 @@ pub(super) async fn accept_loop(
     frame_watch: watch::Receiver<Option<Arc<StreamFrame>>>,
     client_count: Arc<Mutex<usize>>,
     client_slot: Arc<RwLock<Option<Arc<CdpClient>>>>,
+    firefox_live: Arc<RwLock<Option<FirefoxLive>>>,
     client_notify: Arc<Notify>,
     idle_activity: Arc<IdleActivity>,
     screencasting: Arc<Mutex<bool>>,
@@ -166,6 +168,7 @@ pub(super) async fn accept_loop(
                 let frame_watch = frame_watch.clone();
                 let client_count = client_count.clone();
                 let client_slot = client_slot.clone();
+                let firefox_live = firefox_live.clone();
                 let client_notify = client_notify.clone();
                 let idle_activity = idle_activity.clone();
                 let screencasting = screencasting.clone();
@@ -186,6 +189,7 @@ pub(super) async fn accept_loop(
                         frame_watch,
                         client_count,
                         client_slot,
+                        firefox_live,
                         client_notify,
                         idle_activity,
                         screencasting,
@@ -226,6 +230,7 @@ async fn handle_connection(
     frame_watch: watch::Receiver<Option<Arc<StreamFrame>>>,
     client_count: Arc<Mutex<usize>>,
     client_slot: Arc<RwLock<Option<Arc<CdpClient>>>>,
+    firefox_live: Arc<RwLock<Option<FirefoxLive>>>,
     client_notify: Arc<Notify>,
     idle_activity: Arc<IdleActivity>,
     screencasting: Arc<Mutex<bool>>,
@@ -256,6 +261,7 @@ async fn handle_connection(
             frame_watch,
             client_count,
             client_slot,
+            firefox_live,
             client_notify,
             idle_activity,
             screencasting,
@@ -286,6 +292,7 @@ async fn handle_ws_client(
     mut frame_watch: watch::Receiver<Option<Arc<StreamFrame>>>,
     client_count: Arc<Mutex<usize>>,
     client_slot: Arc<RwLock<Option<Arc<CdpClient>>>>,
+    firefox_live: Arc<RwLock<Option<FirefoxLive>>>,
     client_notify: Arc<Notify>,
     idle_activity: Arc<IdleActivity>,
     screencasting: Arc<Mutex<bool>>,
@@ -338,6 +345,7 @@ async fn handle_ws_client(
     let mut reader_task = AbortOnDrop(tokio::spawn(reader_loop(
         ws_rx,
         client_slot.clone(),
+        firefox_live.clone(),
         cdp_session_id.clone(),
         config_tx,
         ack_tx,
@@ -346,7 +354,7 @@ async fn handle_ws_client(
 
     {
         let guard = client_slot.read().await;
-        let connected = guard.is_some();
+        let connected = guard.is_some() || firefox_live.read().await.is_some();
         let sc = *screencasting.lock().await;
         let vw = *viewport_width.lock().await;
         let vh = *viewport_height.lock().await;
@@ -498,6 +506,7 @@ async fn handle_ws_client(
 async fn reader_loop(
     mut ws_rx: SplitStream<WebSocketStream<TcpStream>>,
     client_slot: Arc<RwLock<Option<Arc<CdpClient>>>>,
+    firefox_live: Arc<RwLock<Option<FirefoxLive>>>,
     cdp_session_id: Arc<RwLock<Option<String>>>,
     config: watch::Sender<ClientConfig>,
     ack: watch::Sender<u64>,
@@ -538,6 +547,14 @@ async fn reader_loop(
                         });
                     }
                     continue;
+                }
+                if is_user_input_message_type(msg_type) {
+                    let live = firefox_live.read().await.clone();
+                    if let Some(live) = live {
+                        idle_activity.mark();
+                        firefox_stream::dispatch_input(&live, msg_type, &parsed).await;
+                        continue;
+                    }
                 }
                 let guard = client_slot.read().await;
                 if let Some(ref client) = *guard {

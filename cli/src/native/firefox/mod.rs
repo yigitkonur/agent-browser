@@ -16,5 +16,6 @@ pub mod rdp;
 pub mod session;
 pub mod snapshot;
 pub mod storage;
+pub mod stream;
 pub mod tabs;
 pub mod target;
