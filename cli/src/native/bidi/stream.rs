@@ -4,7 +4,7 @@ use std::time::Duration;
 use serde_json::{json, Value};
 use tokio::sync::broadcast::error::RecvError;
 
-use super::bidi::BidiClient;
+use super::client::BidiClient;
 use super::input::{self, Origin};
 use crate::native::stream::{FrameMetadata, StreamServer};
 

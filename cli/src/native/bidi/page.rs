@@ -351,7 +351,7 @@ pub async fn waitforfunction(cmd: &Value, state: &mut DaemonState) -> Result<Val
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::native::firefox::session::tests::fake_session;
+    use crate::native::bidi::session::tests::fake_session;
 
     #[test]
     fn neterror_url_becomes_a_message() {

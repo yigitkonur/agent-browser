@@ -11,8 +11,8 @@ use tokio::time::Instant;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::WebSocketStream;
 
+use crate::native::bidi::stream::{self as firefox_stream, FirefoxLive};
 use crate::native::cdp::client::CdpClient;
-use crate::native::firefox::stream::{self as firefox_stream, FirefoxLive};
 
 use super::http::handle_http_request;
 use super::{is_allowed_origin, timestamp_ms, IdleActivity, StreamFrame};

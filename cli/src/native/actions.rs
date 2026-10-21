@@ -16,6 +16,7 @@ use crate::validation::{is_valid_session_name, session_name_error};
 
 use super::a11y;
 use super::auth;
+use super::bidi;
 use super::browser::{should_track_target, BrowserManager, WaitUntil, WedgeReport};
 use super::cdp::chrome::{prepare_nss_home, LaunchOptions};
 use super::cdp::client::CdpClient;
@@ -28,7 +29,6 @@ use super::cookies;
 use super::diff;
 use super::downloads::{DownloadLedger, DownloadState};
 use super::element::RefMap;
-use super::firefox;
 use super::inspect_server::InspectServer;
 use super::interaction;
 use super::network::{self, DomainFilter, EventTracker};
@@ -638,8 +638,8 @@ pub struct DaemonState {
     pub appium: Option<AppiumManager>,
     pub safari_driver: Option<safari::SafariDriverProcess>,
     pub webdriver_backend: Option<super::webdriver::backend::WebDriverBackend>,
-    pub firefox: Option<firefox::session::FirefoxSession>,
-    pub firefox_poller: Option<firefox::stream::Poller>,
+    pub firefox: Option<bidi::session::FirefoxSession>,
+    pub firefox_poller: Option<bidi::stream::Poller>,
     pub backend_type: BackendType,
     pub ref_map: RefMap,
     /// Last delta snapshot per page session. Bounded to the currently tracked tabs.
@@ -1248,19 +1248,12 @@ impl DaemonState {
                 .as_ref()
                 .and_then(|m| m.active_session_id().ok().map(|s| s.to_string()));
             let connected = self.browser.is_some() || self.firefox.is_some();
-            let live = self
-                .firefox
-                .as_ref()
-                .map(|ff| firefox::stream::FirefoxLive {
-                    bidi: Arc::clone(&ff.bidi),
-                    context: ff.context.clone(),
-                });
+            let live = self.firefox.as_ref().map(|ff| bidi::stream::FirefoxLive {
+                bidi: Arc::clone(&ff.bidi),
+                context: ff.context.clone(),
+            });
             self.firefox_poller = live.clone().map(|live| {
-                firefox::stream::spawn_poller(
-                    live,
-                    Arc::clone(server),
-                    self.pending_dialog.is_some(),
-                )
+                bidi::stream::spawn_poller(live, Arc::clone(server), self.pending_dialog.is_some())
             });
             server.set_firefox_live(live).await;
             let sc = server.is_screencasting().await;
@@ -1369,7 +1362,7 @@ impl DaemonState {
     }
 
     pub async fn drain_cdp_events_background(&mut self) -> Result<(), String> {
-        firefox::network::drain(self).await;
+        bidi::network::drain(self).await;
         let drained = self.drain_cdp_events();
         self.apply_drained_events(drained).await
     }
@@ -3152,7 +3145,7 @@ pub async fn execute_command(cmd: &Value, state: &mut DaemonState) -> Value {
 
     let firefox_routed = state.engine == "firefox"
         && action != "launch"
-        && (!skip_launch || firefox::actions::handles(action));
+        && (!skip_launch || bidi::actions::handles(action));
 
     // WebDriver backend: reject unsupported CDP-only actions
     if !firefox_routed
@@ -3218,7 +3211,7 @@ pub async fn execute_command(cmd: &Value, state: &mut DaemonState) -> Value {
 
     let mut result = match action {
         _ if firefox_routed => {
-            let result = firefox::actions::execute(action, cmd, state).await;
+            let result = bidi::actions::execute(action, cmd, state).await;
             if matches!(
                 action,
                 "tab_new" | "tab_switch" | "tab_close" | "window_new"
@@ -4921,7 +4914,7 @@ async fn load_state_path_for_engine(
     path: &str,
 ) -> Option<Result<Vec<String>, String>> {
     if let Some(ff) = state.firefox.as_mut() {
-        return Some(firefox::storage::load_state_path(ff, path).await);
+        return Some(bidi::storage::load_state_path(ff, path).await);
     }
     if let Some(mgr) = state.browser.as_ref() {
         if let Ok(session_id) = mgr.active_session_id() {
@@ -5129,7 +5122,7 @@ pub(crate) async fn auto_save_restore_state(
 
     let session_id = state.session_id.clone();
     if let Some(ff) = state.firefox.as_ref() {
-        return match firefox::storage::save_auto_state(ff, &session_name, &session_id).await {
+        return match bidi::storage::save_auto_state(ff, &session_name, &session_id).await {
             Ok(path) => {
                 state.restore_save_status = "saved".to_string();
                 state.restore_saved_path = Some(path.clone());
@@ -5320,7 +5313,7 @@ async fn launch_firefox(
     provider: Option<String>,
     allowed_domains: Vec<String>,
 ) -> Result<Value, String> {
-    firefox::process::validate_firefox_options(
+    bidi::firefox::validate_firefox_options(
         &options,
         cdp.as_deref(),
         auto_connect,
@@ -5363,15 +5356,15 @@ async fn launch_firefox(
     }
     state.ref_map.invalidate_all_documents();
     state.reset_input_state();
-    let net = firefox::network::NetContext::from_state(state);
+    let net = bidi::network::NetContext::from_state(state);
     let mut session =
-        firefox::session::FirefoxSession::launch(&options, net, state.auto_dialog).await?;
+        bidi::session::FirefoxSession::launch(&options, net, state.auto_dialog).await?;
     if !allowed_domains.is_empty()
         || state.proxy_credentials.read().await.is_some()
         || !state.routes.read().await.is_empty()
         || !state.origin_headers.read().await.is_empty()
     {
-        firefox::network::ensure_intercept(&mut session).await?;
+        bidi::network::ensure_intercept(&mut session).await?;
     }
     state.engine = "firefox".to_string();
     write_engine_file(&state.session_id, &state.engine);
@@ -19525,7 +19518,7 @@ printf '%s' '{"protocol":"agent-browser.plugin.v1","success":true,"browser":{"cd
 #[cfg(test)]
 mod firefox_routing_tests {
     use super::*;
-    use crate::native::firefox::session::tests::fake_session;
+    use crate::native::bidi::session::tests::fake_session;
     use crate::test_utils::EnvGuard;
 
     const ENV: &[&str] = &[

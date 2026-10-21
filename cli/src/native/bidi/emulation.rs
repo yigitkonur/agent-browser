@@ -448,8 +448,8 @@ fn parse_media(cmd: &Value) -> EmulatedMedia {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::native::firefox::session::tests::{fake_session, fake_session_with_rdp};
-    use crate::native::firefox::tabs;
+    use crate::native::bidi::session::tests::{fake_session, fake_session_with_rdp};
+    use crate::native::bidi::tabs;
 
     fn media_with_feature(name: &str, value: &str) -> EmulatedMedia {
         EmulatedMedia {
@@ -513,7 +513,7 @@ mod tests {
         assert!(params["networkConditions"].is_null());
     }
 
-    async fn session_state() -> (DaemonState, crate::native::firefox::session::tests::Calls) {
+    async fn session_state() -> (DaemonState, crate::native::bidi::session::tests::Calls) {
         let (ff, _, calls) = fake_session().await;
         let mut state = DaemonState::new();
         state.firefox = Some(ff);

@@ -5,7 +5,7 @@ mod discovery;
 mod http;
 mod websocket;
 
-use crate::native::firefox::stream::FirefoxLive;
+use crate::native::bidi::stream::FirefoxLive;
 
 pub use cdp_loop::{ack_screencast_frame, start_screencast, stop_screencast};
 pub use dashboard::{

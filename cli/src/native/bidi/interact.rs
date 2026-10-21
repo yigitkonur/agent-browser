@@ -599,7 +599,7 @@ fn dialog_status(dialog: Option<&PendingDialog>) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::native::firefox::session::tests::{fake_session_with_script, Calls};
+    use crate::native::bidi::session::tests::{fake_session_with_script, Calls};
 
     fn connected(params: &Value) -> Value {
         if params["functionDeclaration"]

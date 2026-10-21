@@ -318,7 +318,7 @@ pub async fn execute(action: &str, cmd: &Value, state: &mut DaemonState) -> Resu
 mod tests {
     use super::*;
     use crate::native::actions::PendingDialog;
-    use crate::native::firefox::session::tests::fake_session;
+    use crate::native::bidi::session::tests::fake_session;
     use serde_json::json;
 
     fn dialog(context: &str) -> PendingDialog {

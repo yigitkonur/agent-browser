@@ -117,7 +117,7 @@ async fn recover(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::native::firefox::session::tests::{fake_session, Calls};
+    use crate::native::bidi::session::tests::{fake_session, Calls};
 
     async fn state_with_ref(nth: Option<usize>) -> (DaemonState, Calls) {
         let mut state = DaemonState::new();

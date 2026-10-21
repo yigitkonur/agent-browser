@@ -1,8 +1,9 @@
 use serde_json::{json, Value};
 
 use super::actions::session;
-use super::bidi::BidiClient;
+use super::client::BidiClient;
 use super::target::{resolve_target, Target};
+use super::types::LocateNodes;
 use crate::native::actions::{self as chrome, DaemonState};
 use crate::native::element::{
     build_count_elements_js, parse_ref, ELEMENT_BOUNDING_BOX_JS, ELEMENT_CHECKED_JS,
@@ -291,8 +292,10 @@ async fn locate_nodes(
     if let Some(nodes) = start_nodes {
         params["startNodes"] = json!(nodes);
     }
-    let found = bidi.send("browsingContext.locateNodes", params).await?;
-    Ok(found["nodes"].as_array().cloned().unwrap_or_default())
+    let found: LocateNodes = bidi
+        .send_typed("browsingContext.locateNodes", &params)
+        .await?;
+    Ok(found.nodes)
 }
 
 /// Searches the document, then every open shadow root, returning the first match.

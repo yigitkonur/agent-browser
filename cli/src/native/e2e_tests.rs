@@ -19,7 +19,7 @@ use crate::test_utils::EnvGuard;
 use super::actions::{
     close_current_browser, execute_command, maybe_autosave_restore_state, DaemonState,
 };
-use super::firefox::target::{resolve_target, Target};
+use super::bidi::target::{resolve_target, Target};
 
 fn assert_success(resp: &Value) {
     assert_eq!(

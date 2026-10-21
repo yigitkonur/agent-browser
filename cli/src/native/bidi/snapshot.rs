@@ -4,7 +4,7 @@ use std::time::Duration;
 use serde_json::{json, Value};
 use tokio::sync::broadcast;
 
-use super::rdp::RdpClient;
+use super::firefox_devtools::RdpClient;
 use super::session::FirefoxSession;
 use super::target::find_element;
 use crate::native::actions::{self as chrome, DaemonState};
