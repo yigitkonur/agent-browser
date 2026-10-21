@@ -152,7 +152,11 @@ fn user_js(download_path: Option<&str>, restrict_webrtc: bool) -> String {
          user_pref(\"dom.w3c_touch_events.enabled\", 1);\n\
          user_pref(\"browser.download.useDownloadDir\", true);\n\
          user_pref(\"browser.download.always_ask_before_handling_new_types\", false);\n\
-         user_pref(\"browser.download.manager.showWhenStarting\", false);\n",
+         user_pref(\"browser.download.manager.showWhenStarting\", false);\n\
+         user_pref(\"permissions.default.geo\", 2);\n\
+         user_pref(\"permissions.default.desktop-notification\", 2);\n\
+         user_pref(\"permissions.default.camera\", 2);\n\
+         user_pref(\"permissions.default.microphone\", 2);\n",
     );
     if restrict_webrtc {
         js.push_str("user_pref(\"media.peerconnection.enabled\", false);\n");

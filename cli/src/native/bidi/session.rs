@@ -186,6 +186,7 @@ impl FirefoxSession {
             .to_string();
         let dispatcher = Some(super::network::spawn_dispatcher(bidi.clone(), net.clone()));
         let emulation = EmulationSettings {
+            user_agent: options.user_agent.clone(),
             media: options.color_scheme.as_ref().map(|scheme| EmulatedMedia {
                 media: None,
                 features: vec![("prefers-color-scheme".to_string(), scheme.clone())],

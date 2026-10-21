@@ -15442,6 +15442,50 @@ async fn e2e_firefox_emulation() {
     firefox_close(&mut state).await;
 }
 
+/// A page asking for geolocation after `geolocation` is set gets a prompt-free denial instead of hanging.
+#[tokio::test]
+#[ignore = "requires FIREFOX_BIN; run serially"]
+async fn e2e_firefox_geolocation_request_does_not_hang() {
+    required_firefox_binary();
+    let tmp = tempfile::tempdir().unwrap();
+    let _env = firefox_test_environment(tmp.path());
+    let fixture = firefox_fixture().await;
+    let mut state = DaemonState::new();
+    launch_firefox(&mut state, json!({})).await;
+    firefox_open(&mut state, &fixture.url).await;
+    let resp = firefox_command(
+        &mut state,
+        json!({ "id": "g", "action": "geolocation", "latitude": 37.7, "longitude": -122.4 }),
+    )
+    .await;
+    assert_success(&resp);
+    let result = firefox_eval(
+        &mut state,
+        "new Promise(r => navigator.geolocation.getCurrentPosition(() => r('ok'), e => r('err')))",
+    )
+    .await;
+    assert_eq!(result, json!("err"));
+    firefox_close(&mut state).await;
+}
+
+/// The launch-time user agent reaches page scripts on Firefox.
+#[tokio::test]
+#[ignore = "requires FIREFOX_BIN; run serially"]
+async fn e2e_firefox_launch_user_agent() {
+    required_firefox_binary();
+    let tmp = tempfile::tempdir().unwrap();
+    let _env = firefox_test_environment(tmp.path());
+    let fixture = firefox_fixture().await;
+    let mut state = DaemonState::new();
+    launch_firefox(&mut state, json!({ "userAgent": "DogfoodUA/1" })).await;
+    firefox_open(&mut state, &fixture.url).await;
+    assert_eq!(
+        firefox_eval(&mut state, "navigator.userAgent").await,
+        json!("DogfoodUA/1")
+    );
+    firefox_close(&mut state).await;
+}
+
 #[tokio::test]
 #[ignore = "requires FIREFOX_BIN; run serially"]
 async fn e2e_firefox_full_page_screenshot_larger_than_64mb() {
