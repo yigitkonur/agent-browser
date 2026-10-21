@@ -1,5 +1,4 @@
 use std::collections::HashSet;
-use std::fs;
 
 use serde_json::{json, Value};
 
@@ -355,6 +354,7 @@ async fn collect_origins(ff: &mut FirefoxSession) -> Result<Vec<OriginStorage>, 
         if origin.origin == "null" || origin.origin.is_empty() {
             continue;
         }
+        ff.visited_origins.insert(origin.origin.clone());
         read.insert(origin.origin.clone());
         if has_entries(&origin) && seen.insert(origin.origin.clone()) {
             origins.push(origin);
@@ -552,6 +552,87 @@ pub async fn state_load(cmd: &Value, state: &mut DaemonState) -> Result<Value, S
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::native::bidi::session::tests::fake_session_with;
+    use crate::test_utils::EnvGuard;
+    use std::fs;
+
+    fn origin_result(origin: &str) -> Value {
+        json!({
+            "type": "success",
+            "result": {
+                "type": "object",
+                "value": [
+                    ["origin", {"type": "string", "value": origin}],
+                    ["localStorage", {"type": "array", "value": []}],
+                    ["sessionStorage", {"type": "array", "value": []}]
+                ]
+            }
+        })
+    }
+
+    #[tokio::test]
+    async fn collect_origins_marks_every_read_origin_as_visited() {
+        let (mut ff, tx, _calls) = fake_session_with(|req| match req["method"].as_str() {
+            Some("browsingContext.getTree") => json!({
+                "contexts": [
+                    {"context": "ctx-1", "url": "https://one.test/"},
+                    {"context": "ctx-2", "url": "https://two.test/"}
+                ]
+            }),
+            Some("script.callFunction") => {
+                let context = req["params"]["target"]["context"].as_str().unwrap_or("");
+                let origin = if context == "ctx-1" {
+                    "https://one.test"
+                } else {
+                    "https://two.test"
+                };
+                origin_result(origin)
+            }
+            _ => json!({}),
+        })
+        .await;
+        std::mem::forget(tx);
+
+        let origins = collect_origins(&mut ff).await.unwrap();
+
+        assert!(origins.is_empty());
+        assert_eq!(
+            ff.visited_origins,
+            HashSet::from([
+                "https://one.test".to_string(),
+                "https://two.test".to_string()
+            ])
+        );
+    }
+
+    #[tokio::test]
+    async fn failed_collection_keeps_the_previous_auto_state_file() {
+        let guard = EnvGuard::new(&["HOME", "AGENT_BROWSER_NAMESPACE"]);
+        let home = tempfile::tempdir().unwrap();
+        guard.set("HOME", home.path().to_str().unwrap());
+        guard.remove("AGENT_BROWSER_NAMESPACE");
+        let (final_path, _) = state::auto_state_paths("saved", "id").unwrap();
+        fs::create_dir_all(final_path.parent().unwrap()).unwrap();
+        fs::write(&final_path, "previous").unwrap();
+
+        let (mut ff, tx, _calls) = fake_session_with(|req| match req["method"].as_str() {
+            Some("browsingContext.getTree") => json!({
+                "contexts": [{"context": "ctx-1", "url": "https://one.test/"}]
+            }),
+            Some("script.callFunction") => json!({
+                "type": "exception",
+                "exceptionDetails": {"text": "storage unavailable"}
+            }),
+            _ => json!({}),
+        })
+        .await;
+        std::mem::forget(tx);
+
+        let error = save_auto_state(&mut ff, "saved", "id").await.unwrap_err();
+
+        assert!(error.contains("storage unavailable"), "{error}");
+        assert_eq!(fs::read_to_string(&final_path).unwrap(), "previous");
+    }
 
     #[test]
     fn chrome_state_cookie_converts_to_bidi_params_without_chrome_only_fields() {

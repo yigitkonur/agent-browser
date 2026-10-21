@@ -64,6 +64,40 @@ async fn send_text(
     }
 }
 
+/// Inserts `text` into the focused editable element without emitting key events.
+const INSERT_TEXT_JS: &str = r#"(text) => {
+    const el = document.activeElement;
+    if (!el) return false;
+    const field = el.tagName === 'INPUT' || el.tagName === 'TEXTAREA';
+    if (!field && !el.isContentEditable) return false;
+    if (el.disabled || el.readOnly) return false;
+    const init = { bubbles: true, cancelable: true, inputType: 'insertText', data: text };
+    if (!el.dispatchEvent(new InputEvent('beforeinput', init))) return false;
+    if (!field) {
+        el.focus();
+        return document.execCommand('insertText', false, text);
+    }
+    const start = typeof el.selectionStart === 'number' ? el.selectionStart : el.value.length;
+    const end = typeof el.selectionEnd === 'number' ? el.selectionEnd : start;
+    try {
+        el.setRangeText(text, start, end, 'end');
+    } catch (_) {
+        return false;
+    }
+    el.dispatchEvent(new InputEvent('input', { ...init, cancelable: false }));
+    return true;
+}"#;
+
+async fn insert_text(ff: &FirefoxSession, text: &str) -> Result<(), String> {
+    if text.is_empty() {
+        return Ok(());
+    }
+    ff.bidi
+        .call_function(&ff.context, INSERT_TEXT_JS, None, vec![json!(text)])
+        .await?;
+    Ok(())
+}
+
 fn select_values(cmd: &Value) -> Vec<String> {
     match cmd.get("values") {
         Some(Value::Array(values)) => values
@@ -180,7 +214,7 @@ pub async fn keyboard(cmd: &Value, state: &mut DaemonState) -> Result<Value, Str
         Some("insertText") => {
             let text = require(cmd, "text")?;
             let ff = session(state)?;
-            send_text(ff, &ff.context, text, None).await?;
+            insert_text(ff, text).await?;
             Ok(json!({ "inserted": true }))
         }
         _ => {
@@ -217,7 +251,7 @@ pub async fn input_keyboard(cmd: &Value, state: &mut DaemonState) -> Result<Valu
 pub async fn inserttext(cmd: &Value, state: &mut DaemonState) -> Result<Value, String> {
     let text = require(cmd, "text")?;
     let ff = session(state)?;
-    send_text(ff, &ff.context, text, None).await?;
+    insert_text(ff, text).await?;
     Ok(json!({ "inserted": true }))
 }
 
@@ -426,12 +460,61 @@ mod tests {
             json!({"inserted": true})
         );
 
-        assert_eq!(calls.lock().unwrap().len(), 8);
-        assert!(calls
-            .lock()
-            .unwrap()
-            .iter()
-            .all(|method| method == "input.performActions"));
+        assert_all(
+            &calls,
+            &[
+                "input.performActions",
+                "input.performActions",
+                "input.performActions",
+                "input.performActions",
+                "script.callFunction",
+                "input.performActions",
+                "input.performActions",
+                "script.callFunction",
+            ],
+        );
+    }
+
+    #[tokio::test]
+    async fn insert_text_scripts_the_literal_text_without_key_events() {
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let log = seen.clone();
+        let (ff, _tx, calls) = fake_session_with(move |req| {
+            if req["method"] == "script.callFunction" {
+                log.lock().unwrap().push(req["params"].clone());
+            }
+            json!({"type": "success", "result": {"type": "undefined"}})
+        })
+        .await;
+        let mut state = state_with(ff);
+
+        inserttext(&json!({"text": "a\n\tb"}), &mut state)
+            .await
+            .unwrap();
+        keyboard(
+            &json!({"subaction": "insertText", "text": "c\nd"}),
+            &mut state,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            *calls.lock().unwrap(),
+            ["script.callFunction", "script.callFunction"]
+        );
+        let params = seen.lock().unwrap();
+        assert_eq!(params.len(), 2);
+        let js = params[0]["functionDeclaration"].as_str().unwrap();
+        assert!(js.contains("setRangeText"), "{js}");
+        assert!(js.contains("execCommand('insertText'"), "{js}");
+        assert_eq!(
+            params[0]["arguments"][0],
+            json!({"type": "string", "value": "a\n\tb"})
+        );
+        assert_eq!(
+            params[1]["arguments"][0],
+            json!({"type": "string", "value": "c\nd"})
+        );
     }
 
     #[tokio::test]

@@ -5356,7 +5356,10 @@ async fn launch_firefox(
         storage_state: options.storage_state.as_deref(),
     })?;
     options.restrict_webrtc = !allowed_domains.is_empty();
-    store_proxy_credentials(state, &options).await;
+    let proxy_credentials = options
+        .proxy_username
+        .clone()
+        .map(|user| (user, options.proxy_password.clone().unwrap_or_default()));
     let hash = launch_hash(
         &options,
         &allowed_domains,
@@ -5372,6 +5375,7 @@ async fn launch_firefox(
     let reuse_session = state.firefox.as_mut().is_some_and(|ff| !ff.has_exited());
     if reuse_session && hash_matches {
         load_storage_state(state, &storage_state).await?;
+        *state.proxy_credentials.write().await = proxy_credentials;
         return Ok(json!({ "launched": true, "reused": true, "relaunchedBrowser": false }));
     }
     let had_browser = has_active_browser_session(state);
@@ -5385,7 +5389,7 @@ async fn launch_firefox(
     let mut session =
         bidi::session::FirefoxSession::launch(&options, net, state.auto_dialog).await?;
     if !allowed_domains.is_empty()
-        || state.proxy_credentials.read().await.is_some()
+        || proxy_credentials.is_some()
         || !state.routes.read().await.is_empty()
         || !state.origin_headers.read().await.is_empty()
     {
@@ -5395,9 +5399,14 @@ async fn launch_firefox(
     write_engine_file(&state.session_id, &state.engine);
     state.launch_hash = Some(hash);
     state.firefox = Some(session);
+    let previous_proxy_credentials = state.proxy_credentials.read().await.clone();
+    *state.proxy_credentials.write().await = proxy_credentials;
     state.update_stream_client().await;
     try_auto_restore_state(state).await;
-    load_storage_state_or_rollback(state, &storage_state).await?;
+    if let Err(error) = load_storage_state_or_rollback(state, &storage_state).await {
+        *state.proxy_credentials.write().await = previous_proxy_credentials;
+        return Err(error);
+    }
     Ok(json!({ "launched": true, "relaunchedBrowser": had_browser }))
 }
 
@@ -19545,6 +19554,10 @@ mod firefox_routing_tests {
         "AGENT_BROWSER_EXECUTABLE_PATH",
         "AGENT_BROWSER_ACTION_POLICY",
         "AGENT_BROWSER_POLICY",
+        "AGENT_BROWSER_PROXY",
+        "AGENT_BROWSER_PROXY_BYPASS",
+        "AGENT_BROWSER_PROXY_USERNAME",
+        "AGENT_BROWSER_PROXY_PASSWORD",
     ];
 
     fn clean_env() -> EnvGuard<'static> {
@@ -19665,6 +19678,77 @@ mod firefox_routing_tests {
             .await
             .unwrap();
         assert_eq!(r["reused"], true);
+    }
+
+    #[tokio::test]
+    async fn failed_launch_keeps_the_existing_proxy_credentials() {
+        let _guard = clean_env();
+        let (mut state, _calls) = firefox_state().await;
+        *state.proxy_credentials.write().await = Some(("old".into(), "secret".into()));
+
+        let error = handle_launch(
+            &json!({
+                "action": "launch",
+                "engine": "firefox",
+                "profile": "/tmp/profile",
+                "proxy": {"username": "new", "password": "new-secret"}
+            }),
+            &mut state,
+        )
+        .await
+        .unwrap_err();
+
+        assert!(error.contains("--profile"), "{error}");
+        assert_eq!(
+            *state.proxy_credentials.read().await,
+            Some(("old".to_string(), "secret".to_string()))
+        );
+    }
+
+    #[tokio::test]
+    async fn successful_launch_writes_then_clears_the_proxy_credentials() {
+        let _guard = clean_env();
+        let (mut state, _calls) = firefox_state().await;
+
+        let mut options = launch_options_from_env();
+        options.proxy = Some("http://proxy:3128".into());
+        options.proxy_username = Some("new".into());
+        options.proxy_password = Some("new-secret".into());
+        let hash = launch_hash(
+            &options,
+            &[],
+            &[],
+            &[],
+            &[],
+            Some("firefox"),
+            "launch",
+            None,
+        );
+        state.launch_hash = Some(hash);
+        launch_firefox(&mut state, options, None, false, None, Vec::new())
+            .await
+            .unwrap();
+        assert_eq!(
+            *state.proxy_credentials.read().await,
+            Some(("new".to_string(), "new-secret".to_string()))
+        );
+
+        let options = launch_options_from_env();
+        let hash = launch_hash(
+            &options,
+            &[],
+            &[],
+            &[],
+            &[],
+            Some("firefox"),
+            "launch",
+            None,
+        );
+        state.launch_hash = Some(hash);
+        launch_firefox(&mut state, options, None, false, None, Vec::new())
+            .await
+            .unwrap();
+        assert_eq!(*state.proxy_credentials.read().await, None);
     }
 
     #[tokio::test]
