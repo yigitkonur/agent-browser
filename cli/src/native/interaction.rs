@@ -1207,7 +1207,7 @@ pub async fn dispatch_pending_release(
     Ok(())
 }
 
-fn char_to_key_info(ch: char) -> (String, String, i32) {
+pub(crate) fn char_to_key_info(ch: char) -> (String, String, i32) {
     match ch {
         '\n' | '\r' => ("Enter".to_string(), "Enter".to_string(), 13),
         '\t' => ("Tab".to_string(), "Tab".to_string(), 9),
@@ -1271,7 +1271,7 @@ fn punctuation_key_info(ch: char) -> (&'static str, i32) {
 /// `keyDown` event so that Chrome performs the default action for the key.
 /// For example Enter needs `"\r"` to actually submit a form, and Tab needs
 /// `"\t"` to move focus.  Non-printable / navigation keys return `None`.
-fn key_text(key_name: &str) -> Option<String> {
+pub(crate) fn key_text(key_name: &str) -> Option<String> {
     match key_name {
         "Enter" => Some("\r".to_string()),
         "Tab" => Some("\t".to_string()),
@@ -1287,7 +1287,7 @@ fn key_text(key_name: &str) -> Option<String> {
     }
 }
 
-fn named_key_info(key: &str) -> (String, String, i32) {
+pub(crate) fn named_key_info(key: &str) -> (String, String, i32) {
     match key.to_lowercase().as_str() {
         "enter" | "return" => ("Enter".to_string(), "Enter".to_string(), 13),
         "tab" => ("Tab".to_string(), "Tab".to_string(), 9),
