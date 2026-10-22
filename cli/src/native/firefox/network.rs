@@ -126,6 +126,8 @@ pub struct NetContext {
     pub domain_filter: Arc<RwLock<Option<DomainFilter>>>,
     pub origin_headers: Arc<RwLock<HashMap<String, HashMap<String, String>>>>,
     pub proxy_credentials: Arc<RwLock<Option<(String, String)>>>,
+    /// Proxy credential attempts per request id; a request gets two before the challenge is cancelled.
+    pub proxy_auth_requests: Arc<RwLock<HashMap<String, u8>>>,
     pub headers: Arc<RwLock<HashMap<String, String>>>,
 }
 
@@ -226,6 +228,16 @@ pub fn spawn_dispatcher(bidi: Arc<BidiClient>, net: NetContext) -> AbortOnDrop {
             match rx.recv().await {
                 Ok(e) if e["params"]["isBlocked"] == true => {
                     tokio::spawn(resolve(bidi.clone(), net.clone(), e));
+                }
+                Ok(e)
+                    if matches!(
+                        e["method"].as_str(),
+                        Some("network.responseCompleted" | "network.fetchError")
+                    ) =>
+                {
+                    if let Some(id) = e["params"]["request"]["request"].as_str() {
+                        net.proxy_auth_requests.write().await.remove(id);
+                    }
                 }
                 Ok(_) | Err(broadcast::error::RecvError::Lagged(_)) => {}
                 Err(_) => break,
@@ -337,12 +349,21 @@ async fn auth_required(
         None
     };
     let params = match credentials {
-        Some((username, password)) => json!({
-            "request": id,
-            "action": "provideCredentials",
-            "credentials": {"type": "password", "username": username, "password": password},
-        }),
-        None => json!({"request": id, "action": "cancel"}),
+        Some((username, password))
+            if {
+                let mut tries = net.proxy_auth_requests.write().await;
+                let n = tries.entry(id.to_string()).or_insert(0);
+                *n += 1;
+                *n <= 2
+            } =>
+        {
+            json!({
+                "request": id,
+                "action": "provideCredentials",
+                "credentials": {"type": "password", "username": username, "password": password},
+            })
+        }
+        _ => json!({"request": id, "action": "cancel"}),
     };
     bidi.send("network.continueWithAuth", params).await?;
     Ok(())

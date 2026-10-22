@@ -15071,6 +15071,62 @@ async fn e2e_firefox_proxy_credentials_not_sent_to_origin() {
     firefox_close(&mut state).await;
 }
 
+#[tokio::test]
+#[ignore = "requires FIREFOX_BIN; run serially"]
+async fn e2e_firefox_rejected_proxy_credentials_fail_navigation() {
+    required_firefox_binary();
+    let tmp = tempfile::tempdir_in(".").unwrap();
+    let _env = firefox_test_environment(tmp.path());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let proxy = format!("http://{}", listener.local_addr().unwrap());
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let proxy_attempts = attempts.clone();
+    let proxy_server = tokio::spawn(async move {
+        loop {
+            let Ok((mut stream, _)) = listener.accept().await else {
+                break;
+            };
+            proxy_attempts.fetch_add(1, Ordering::Relaxed);
+            let mut request = [0u8; 4096];
+            let _ = stream.read(&mut request).await;
+            let _ = stream
+                .write_all(
+                    b"HTTP/1.1 407 Proxy Authentication Required\r\nProxy-Authenticate: Basic realm=\"proxy\"\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                )
+                .await;
+        }
+    });
+    let mut state = DaemonState::new();
+    launch_firefox(
+        &mut state,
+        json!({ "proxy": { "server": proxy, "username": "proxy-user", "password": "wrong" } }),
+    )
+    .await;
+    let started = std::time::Instant::now();
+    let response = firefox_command(
+        &mut state,
+        json!({ "id": "nav", "action": "navigate", "url": "http://example.com/" }),
+    )
+    .await;
+    let elapsed = started.elapsed();
+    firefox_close(&mut state).await;
+    proxy_server.abort();
+    let attempt_count = attempts.load(Ordering::Relaxed);
+
+    assert_eq!(response["success"], false, "{response}");
+    assert!(
+        response["error"]
+            .as_str()
+            .is_some_and(|error| error.starts_with("Navigation failed:")),
+        "navigation should report a clear error: {response}"
+    );
+    assert!(elapsed < std::time::Duration::from_secs(5), "{elapsed:?}");
+    assert!(
+        attempt_count <= 4,
+        "proxy received {attempt_count} attempts"
+    );
+}
+
 /// PR3: clicking a download link saves the file to the requested path.
 #[tokio::test]
 #[ignore = "requires FIREFOX_BIN; run serially"]
