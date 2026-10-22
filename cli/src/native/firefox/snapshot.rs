@@ -70,16 +70,19 @@ fn push_node(
     nodes: &mut Vec<AXNode>,
 ) -> String {
     let id = nodes.len().to_string();
-    let role = match node["role"].as_str().unwrap_or("") {
-        "document" => "RootWebArea",
-        "text leaf" => "StaticText",
-        "internal frame" => "Iframe",
-        other => other,
-    };
     let states: Vec<&str> = node["states"]
         .as_array()
         .map(|a| a.iter().filter_map(Value::as_str).collect())
         .unwrap_or_default();
+    let role = match node["role"].as_str().unwrap_or("") {
+        "document" => "RootWebArea",
+        "text leaf" => "StaticText",
+        "internal frame" => "Iframe",
+        "entry" | "password text" => "textbox",
+        "search" if states.contains(&"editable") => "searchbox",
+        "spin button" => "spinbutton",
+        other => other,
+    };
     let mut properties: Vec<AXProperty> = [
         ("checked", "checked"),
         ("expanded", "expanded"),
