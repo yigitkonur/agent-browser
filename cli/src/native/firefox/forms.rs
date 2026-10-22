@@ -12,8 +12,8 @@ use super::target::{resolve_target, Target};
 use crate::native::actions::DaemonState;
 use crate::native::element::ELEMENT_CHECKED_JS;
 use crate::native::interaction::{
-    CLEAR_INPUT_JS, CLEAR_INPUT_TYPING_JS, CLEAR_VALUE_JS, CLICK_CHECKBOX_JS, FOCUS_JS,
-    SELECT_ALL_JS, SELECT_OPTION_JS,
+    CLEAR_INPUT_TYPING_JS, CLEAR_VALUE_JS, CLICK_CHECKBOX_JS, FOCUS_JS, SELECT_ALL_JS,
+    SELECT_OPTION_JS,
 };
 
 fn require<'a>(cmd: &'a Value, key: &str) -> Result<&'a str, String> {
@@ -37,27 +37,32 @@ async fn run(
         .await
 }
 
-async fn perform(ff: &FirefoxSession, actions: Value) -> Result<(), String> {
-    let params = json!({ "context": ff.context, "actions": actions });
+async fn perform(ff: &FirefoxSession, context: &str, actions: Value) -> Result<(), String> {
+    let params = json!({ "context": context, "actions": actions });
     let _ = ff
         .race_prompt(ff.bidi.send("input.performActions", params))
         .await?;
     Ok(())
 }
 
-async fn send_text(ff: &FirefoxSession, text: &str, delay_ms: Option<u64>) -> Result<(), String> {
+async fn send_text(
+    ff: &FirefoxSession,
+    context: &str,
+    text: &str,
+    delay_ms: Option<u64>,
+) -> Result<(), String> {
     if text.is_empty() {
         return Ok(());
     }
     match delay_ms {
         Some(delay) if delay > 0 => {
             for ch in text.chars() {
-                perform(ff, key_text_actions(&ch.to_string())).await?;
+                perform(ff, context, key_text_actions(&ch.to_string())).await?;
                 tokio::time::sleep(Duration::from_millis(delay)).await;
             }
             Ok(())
         }
-        _ => perform(ff, key_text_actions(text)).await,
+        _ => perform(ff, context, key_text_actions(text)).await,
     }
 }
 
@@ -133,8 +138,12 @@ pub async fn fill(cmd: &Value, state: &mut DaemonState) -> Result<Value, String>
     let target = resolve_target(state, selector).await?;
     let ff = session(state)?;
     run(ff, &target, FOCUS_JS, vec![]).await?;
-    run(ff, &target, CLEAR_INPUT_JS, vec![]).await?;
-    send_text(ff, value, None).await?;
+    run(ff, &target, SELECT_ALL_JS, vec![]).await?;
+    if value.is_empty() {
+        perform(ff, &target.context, key_chord_actions("Backspace")).await?;
+    } else {
+        send_text(ff, &target.context, value, None).await?;
+    }
     Ok(json!({ "filled": selector }))
 }
 
@@ -150,7 +159,7 @@ pub async fn type_text(cmd: &Value, state: &mut DaemonState) -> Result<Value, St
     if clear {
         run(ff, &target, CLEAR_INPUT_TYPING_JS, vec![]).await?;
     }
-    send_text(ff, text, delay).await?;
+    send_text(ff, &target.context, text, delay).await?;
     Ok(json!({ "typed": text }))
 }
 
@@ -158,7 +167,7 @@ pub async fn type_text(cmd: &Value, state: &mut DaemonState) -> Result<Value, St
 pub async fn press(cmd: &Value, state: &mut DaemonState) -> Result<Value, String> {
     let key = require(cmd, "key")?;
     let ff = session(state)?;
-    perform(ff, key_chord_actions(key)).await?;
+    perform(ff, &ff.context, key_chord_actions(key)).await?;
     Ok(json!({ "pressed": key }))
 }
 
@@ -166,7 +175,7 @@ pub async fn press(cmd: &Value, state: &mut DaemonState) -> Result<Value, String
 pub async fn keydown(cmd: &Value, state: &mut DaemonState) -> Result<Value, String> {
     let key = require(cmd, "key")?;
     let ff = session(state)?;
-    perform(ff, key_event_actions("keyDown", key)).await?;
+    perform(ff, &ff.context, key_event_actions("keyDown", key)).await?;
     Ok(json!({ "keydown": key }))
 }
 
@@ -174,7 +183,7 @@ pub async fn keydown(cmd: &Value, state: &mut DaemonState) -> Result<Value, Stri
 pub async fn keyup(cmd: &Value, state: &mut DaemonState) -> Result<Value, String> {
     let key = require(cmd, "key")?;
     let ff = session(state)?;
-    perform(ff, key_event_actions("keyUp", key)).await?;
+    perform(ff, &ff.context, key_event_actions("keyUp", key)).await?;
     Ok(json!({ "keyup": key }))
 }
 
@@ -184,13 +193,13 @@ pub async fn keyboard(cmd: &Value, state: &mut DaemonState) -> Result<Value, Str
         Some("type") => {
             let text = require(cmd, "text")?;
             let ff = session(state)?;
-            send_text(ff, text, None).await?;
+            send_text(ff, &ff.context, text, None).await?;
             Ok(json!({ "typed": text }))
         }
         Some("insertText") => {
             let text = require(cmd, "text")?;
             let ff = session(state)?;
-            send_text(ff, text, None).await?;
+            send_text(ff, &ff.context, text, None).await?;
             Ok(json!({ "inserted": true }))
         }
         _ => {
@@ -204,7 +213,7 @@ pub async fn keyboard(cmd: &Value, state: &mut DaemonState) -> Result<Value, Str
                 .or_else(|| cmd.get("text").and_then(Value::as_str))
                 .unwrap_or("");
             let ff = session(state)?;
-            perform(ff, key_event_actions(event_type, key)).await?;
+            perform(ff, &ff.context, key_event_actions(event_type, key)).await?;
             Ok(json!({ "dispatched": event_type }))
         }
     }
@@ -219,7 +228,7 @@ pub async fn input_keyboard(cmd: &Value, state: &mut DaemonState) -> Result<Valu
         .or_else(|| cmd.get("text").and_then(Value::as_str))
         .unwrap_or("");
     let ff = session(state)?;
-    perform(ff, key_event_actions(event_type, key)).await?;
+    perform(ff, &ff.context, key_event_actions(event_type, key)).await?;
     Ok(json!({ "dispatched": event_type }))
 }
 
@@ -227,7 +236,7 @@ pub async fn input_keyboard(cmd: &Value, state: &mut DaemonState) -> Result<Valu
 pub async fn inserttext(cmd: &Value, state: &mut DaemonState) -> Result<Value, String> {
     let text = require(cmd, "text")?;
     let ff = session(state)?;
-    send_text(ff, text, None).await?;
+    send_text(ff, &ff.context, text, None).await?;
     Ok(json!({ "inserted": true }))
 }
 
@@ -468,7 +477,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn fill_focuses_clears_then_types() {
+    async fn fill_focuses_selects_all_then_types() {
         let (ff, _tx, calls) = fake_session_with(node_responder).await;
         let mut state = state_with(ff);
         let result = fill(&json!({"selector": "#email", "value": "a@b.c"}), &mut state)

@@ -14409,6 +14409,16 @@ fn firefox_serve(
                     "",
                     include_str!("test_fixtures/firefox_frame.html").to_string(),
                 ),
+                "/forms.html" => (
+                    "text/html; charset=utf-8",
+                    "",
+                    include_str!("test_fixtures/firefox_forms.html").replace("__OTHER__", &other),
+                ),
+                "/forms-frame.html" => (
+                    "text/html; charset=utf-8",
+                    "",
+                    include_str!("test_fixtures/firefox_forms_frame.html").to_string(),
+                ),
                 "/api" => ("text/plain", "", "real".to_string()),
                 "/download.txt" => (
                     "text/plain",
@@ -14558,6 +14568,69 @@ async fn firefox_close(state: &mut DaemonState) {
     let resp = firefox_command(state, json!({ "id": "close", "action": "close" })).await;
     assert_success(&resp);
     assert_eq!(get_data(&resp)["closed"], true);
+}
+
+/// Fill replaces controlled values and reaches password inputs by ref, fill/type reach contenteditables and cross-origin frames, and inserttext honors a canceled beforeinput.
+#[tokio::test]
+#[ignore = "requires FIREFOX_BIN; run serially"]
+async fn e2e_firefox_form_entry() {
+    required_firefox_binary();
+    let tmp = tempfile::tempdir().unwrap();
+    let _env = firefox_test_environment(tmp.path());
+    let fixture = firefox_fixture().await;
+    let mut state = DaemonState::new();
+    launch_firefox(&mut state, json!({})).await;
+    firefox_open(&mut state, &format!("{}forms.html", fixture.url)).await;
+
+    for (label, action, args) in [
+        ("Issues", "fill", json!({ "value": "is:issue firefox" })),
+        ("Editor", "fill", json!({ "value": "filled editor" })),
+        ("Password", "fill", json!({ "value": "hunter2" })),
+        ("Frame fill", "fill", json!({ "value": "cross frame fill" })),
+        ("Frame type", "type", json!({ "text": "cross frame type" })),
+    ] {
+        let target = firefox_ref(&mut state, label).await;
+        assert_success(&firefox_act(&mut state, action, &target, args).await);
+    }
+    let guarded = firefox_ref(&mut state, "Guarded").await;
+    assert_success(&firefox_act(&mut state, "click", &guarded, json!({})).await);
+    let inserted = firefox_command(
+        &mut state,
+        json!({ "id": "insert", "action": "inserttext", "text": "BLOCKED" }),
+    )
+    .await;
+    assert_success(&inserted);
+
+    assert_eq!(
+        firefox_eval(
+            &mut state,
+            "[issues.value, editor.textContent, password.value, guarded.value].join('|')"
+        )
+        .await,
+        "is:issue firefox|filled editor|hunter2|"
+    );
+    for (label, expected) in [
+        ("Frame fill", "cross frame fill"),
+        ("Frame type", "cross frame type"),
+    ] {
+        let target = firefox_ref(&mut state, label).await;
+        let target = resolve_target(&mut state, &target).await.unwrap();
+        let value = state
+            .firefox
+            .as_ref()
+            .unwrap()
+            .bidi
+            .call_function(
+                &target.context,
+                "function() { return this.value; }",
+                Some(json!({ "sharedId": target.shared_id })),
+                vec![],
+            )
+            .await
+            .unwrap();
+        assert_eq!(value, expected);
+    }
+    firefox_close(&mut state).await;
 }
 
 /// PR1: open, title, evaluate, Chrome-only error, and close leaves no process or profile.
