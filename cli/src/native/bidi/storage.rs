@@ -252,16 +252,6 @@ pub async fn storage_clear(cmd: &Value, state: &mut DaemonState) -> Result<Value
     Ok(json!({ "cleared": true }))
 }
 
-/// Run in a BiDi sandbox so page scripts never see the payload; the origin is checked in the same call so a redirect cannot race it.
-const RESTORE_STORAGE_JS: &str = r#"(expectedOrigin, payload) => {
-    if (location.origin !== expectedOrigin) {
-        throw new Error('landed on ' + location.origin + ' instead of ' + expectedOrigin);
-    }
-    const p = JSON.parse(payload);
-    for (const e of p.localStorage) localStorage.setItem(e.name, e.value);
-    for (const e of p.sessionStorage) sessionStorage.setItem(e.name, e.value);
-}"#;
-
 fn collect_context_ids(contexts: &Value, out: &mut Vec<String>) {
     for context in contexts.as_array().into_iter().flatten() {
         let scriptable = !context["url"].as_str().unwrap_or("").starts_with("about:");
