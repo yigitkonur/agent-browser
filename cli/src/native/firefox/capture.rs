@@ -212,15 +212,16 @@ async fn frame_offset(
 async fn collect_annotations(
     state: &DaemonState,
     capture: &str,
-) -> Result<Vec<RawAnnotation>, String> {
+) -> Result<(Vec<RawAnnotation>, Vec<RawAnnotation>), String> {
     let Some(ff) = state.firefox.as_ref() else {
-        return Ok(Vec::new());
+        return Ok((Vec::new(), Vec::new()));
     };
     let tree = ff
         .bidi
         .send("browsingContext.getTree", json!({"root": ff.top_context}))
         .await?;
     let mut annotations = Vec::new();
+    let mut overlay_annotations = Vec::new();
     for (ref_id, entry) in state.ref_map.entries_sorted() {
         let Some(id) = entry.backend_node_id else {
             continue;
@@ -250,15 +251,19 @@ async fn collect_annotations(
             .strip_prefix('e')
             .and_then(|n| n.parse::<u64>().ok())
             .unwrap_or(0);
-        annotations.push(RawAnnotation {
+        let annotation = RawAnnotation {
             ref_id,
             number,
             role: entry.role,
             name: (!entry.name.is_empty()).then_some(entry.name),
             rect,
-        });
+        };
+        if context == capture {
+            overlay_annotations.push(annotation.clone());
+        }
+        annotations.push(annotation);
     }
-    Ok(annotations)
+    Ok((annotations, overlay_annotations))
 }
 
 /// Viewport, full-page or element screenshot, with annotations drawn before capture.
@@ -296,20 +301,22 @@ pub async fn screenshot(cmd: &Value, state: &mut DaemonState) -> Result<Value, S
         (Some(target), false) => target.context.clone(),
         _ => session(state)?.context.clone(),
     };
-    let annotations = if annotate {
-        filter_annotations(
-            collect_annotations(state, &capture_context).await?,
-            clip_rect.as_ref(),
+    let (annotations, overlay_annotations) = if annotate {
+        let (annotations, overlay_annotations) =
+            collect_annotations(state, &capture_context).await?;
+        (
+            filter_annotations(annotations, clip_rect.as_ref()),
+            filter_annotations(overlay_annotations, clip_rect.as_ref()),
         )
     } else {
-        Vec::new()
+        (Vec::new(), Vec::new())
     };
 
     let data = {
         let ff = session(state)?;
         let context = capture_context.clone();
-        let overlay = if annotate && !annotations.is_empty() {
-            evaluate(ff, &context, &annotation_overlay_js(&annotations)).await?;
+        let overlay = if annotate && !overlay_annotations.is_empty() {
+            evaluate(ff, &context, &annotation_overlay_js(&overlay_annotations)).await?;
             true
         } else {
             false

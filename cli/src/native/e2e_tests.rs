@@ -14799,6 +14799,60 @@ async fn e2e_firefox_frame_dialog() {
     firefox_close(&mut state).await;
 }
 
+#[tokio::test]
+#[ignore = "requires FIREFOX_BIN; run serially"]
+async fn e2e_firefox_screenshot_annotate_excludes_iframe_overlays() {
+    required_firefox_binary();
+    let tmp = tempfile::tempdir().unwrap();
+    let _env = firefox_test_environment(tmp.path());
+    let fixture = firefox_fixture().await;
+    let mut state = DaemonState::new();
+    launch_firefox(&mut state, json!({})).await;
+    firefox_open(&mut state, &fixture.url).await;
+
+    firefox_eval(
+        &mut state,
+        "window.__annotationLabels = []; new MutationObserver(records => { for (const record of records) for (const node of record.addedNodes) if (node.id === '__agent_browser_annotations__') window.__annotationLabels.push(...Array.from(node.children, box => box.firstElementChild.textContent)); }).observe(document.documentElement, { childList: true }); true",
+    )
+    .await;
+    let screenshot = firefox_command(
+        &mut state,
+        json!({ "id": "annotated", "action": "screenshot", "annotate": true }),
+    )
+    .await;
+    assert_success(&screenshot);
+    let annotations = get_data(&screenshot)["annotations"]
+        .as_array()
+        .unwrap()
+        .clone();
+    let drawn = firefox_eval(&mut state, "window.__annotationLabels")
+        .await
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|label| label.as_str().unwrap().parse::<u64>().unwrap())
+        .collect::<Vec<_>>();
+    let in_frame = |annotation: &Value| {
+        matches!(
+            annotation["name"].as_str(),
+            Some("Frame button" | "Frame ask")
+        )
+    };
+    let top_document_numbers = annotations
+        .iter()
+        .filter(|annotation| !in_frame(annotation))
+        .map(|annotation| annotation["number"].as_u64().unwrap())
+        .collect::<Vec<_>>();
+    let has_frame_annotation = annotations.iter().any(in_frame);
+    firefox_close(&mut state).await;
+
+    assert!(
+        has_frame_annotation,
+        "iframe refs remain in the annotation list"
+    );
+    assert_eq!(drawn, top_document_numbers);
+}
+
 async fn firefox_text_of(state: &mut DaemonState, target: &Target) -> String {
     let ff = state.firefox.as_ref().unwrap();
     let this = json!({ "sharedId": target.shared_id });
