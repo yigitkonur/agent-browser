@@ -14773,6 +14773,32 @@ async fn e2e_firefox_iframe_and_shadow_root_refs() {
     firefox_close(&mut state).await;
 }
 
+/// A confirm() opened inside a cross-origin iframe stops the click promptly and dismisses.
+#[tokio::test]
+#[ignore = "requires FIREFOX_BIN; run serially"]
+async fn e2e_firefox_frame_dialog() {
+    required_firefox_binary();
+    let tmp = tempfile::tempdir().unwrap();
+    let _env = firefox_test_environment(tmp.path());
+    let fixture = firefox_fixture().await;
+    let mut state = DaemonState::new();
+    launch_firefox(&mut state, json!({})).await;
+    firefox_open(&mut state, &fixture.url).await;
+
+    let ask = firefox_ref(&mut state, "Frame ask").await;
+    let resp = firefox_act(&mut state, "click", &ask, json!({})).await;
+    assert_success(&resp);
+    assert_eq!(get_data(&resp)["dialogOpened"], true, "{resp}");
+    let resp = firefox_command(
+        &mut state,
+        json!({ "id": "d", "action": "dialog", "response": "dismiss" }),
+    )
+    .await;
+    assert_success(&resp);
+    assert_eq!(get_data(&resp)["accepted"], false, "{resp}");
+    firefox_close(&mut state).await;
+}
+
 async fn firefox_text_of(state: &mut DaemonState, target: &Target) -> String {
     let ff = state.firefox.as_ref().unwrap();
     let this = json!({ "sharedId": target.shared_id });

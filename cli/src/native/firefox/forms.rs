@@ -40,7 +40,7 @@ async fn run(
 async fn perform(ff: &FirefoxSession, context: &str, actions: Value) -> Result<(), String> {
     let params = json!({ "context": context, "actions": actions });
     let _ = ff
-        .race_prompt(ff.bidi.send("input.performActions", params))
+        .race_prompt(context, ff.bidi.send("input.performActions", params))
         .await?;
     Ok(())
 }
@@ -126,7 +126,7 @@ async fn is_checked(ff: &FirefoxSession, target: &Target) -> Result<bool, String
 
 async fn click_control(ff: &FirefoxSession, target: &Target) -> Result<(), String> {
     let _ = ff
-        .race_prompt(run(ff, target, CLICK_CHECKBOX_JS, vec![]))
+        .race_prompt(&target.context, run(ff, target, CLICK_CHECKBOX_JS, vec![]))
         .await?;
     Ok(())
 }
@@ -320,7 +320,7 @@ pub async fn upload(cmd: &Value, state: &mut DaemonState) -> Result<Value, Strin
         "files": paths,
     });
     let _ = ff
-        .race_prompt(ff.bidi.send("input.setFiles", params))
+        .race_prompt(&target.context, ff.bidi.send("input.setFiles", params))
         .await?;
     Ok(json!({ "uploaded": files.len(), "selector": selector }))
 }

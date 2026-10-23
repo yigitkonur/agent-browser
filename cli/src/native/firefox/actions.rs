@@ -153,7 +153,10 @@ fn dialog_guard(action: &str, state: &DaemonState) -> Result<(), String> {
     let (Some(dialog), Some(ff)) = (&state.pending_dialog, &state.firefox) else {
         return Ok(());
     };
-    let on_active_tab = dialog.session_id.as_deref().is_none_or(|c| c == ff.context);
+    let on_active_tab = dialog
+        .session_id
+        .as_deref()
+        .is_none_or(|c| c == ff.top_context || !ff.tab_ids.contains_key(c));
     if on_active_tab && !SAFE_DURING_DIALOG.contains(&action) {
         return Err(format!(
             "A JavaScript {} dialog is blocking the page: \"{}\". Resolve it with `dialog accept` or `dialog dismiss`, then retry `{}`.",
@@ -357,14 +360,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn dialog_blocks_only_the_active_context() {
+    async fn dialog_blocks_only_the_active_tab() {
         let mut state = DaemonState::new();
-        let (ff, _tx, _) = fake_session().await;
+        let (mut ff, _tx, _) = fake_session().await;
+        ff.tab_ids.insert("ctx-background".to_string(), 2);
         state.firefox = Some(ff);
         state.pending_dialog = Some(dialog("ctx-active"));
         let e = dialog_guard("navigate", &state).unwrap_err();
         assert!(e.contains("confirm dialog is blocking the page"), "{e}");
         assert!(dialog_guard("tab_list", &state).is_ok());
+        state.pending_dialog = Some(dialog("ctx-iframe"));
+        assert!(dialog_guard("navigate", &state).is_err());
         state.pending_dialog = Some(dialog("ctx-background"));
         assert!(dialog_guard("navigate", &state).is_ok());
     }

@@ -19568,6 +19568,8 @@ mod firefox_routing_tests {
     async fn dialog_on_a_background_tab_does_not_block_the_active_tab() {
         let _guard = clean_env();
         let (mut state, calls) = firefox_state().await;
+        let ff = state.firefox.as_mut().unwrap();
+        ff.tab_ids.insert("ctx-background".into(), 2);
         state.pending_dialog = Some(PendingDialog {
             dialog_type: "confirm".into(),
             message: "sure?".into(),

@@ -77,10 +77,13 @@ async fn prepare(
 /// Runs the actions and reports whether a prompt opened before they finished.
 async fn perform(ff: &FirefoxSession, context: &str, actions: Value) -> Result<bool, String> {
     let reply = ff
-        .race_prompt(ff.bidi.send(
-            "input.performActions",
-            json!({"context": context, "actions": actions}),
-        ))
+        .race_prompt(
+            context,
+            ff.bidi.send(
+                "input.performActions",
+                json!({"context": context, "actions": actions}),
+            ),
+        )
         .await?;
     Ok(reply.is_none())
 }

@@ -209,9 +209,10 @@ impl FirefoxSession {
         }
     }
 
-    /// Runs `fut` until it finishes or a prompt opens on the active context. Returns `None` for the prompt.
+    /// Runs `fut` until it finishes or a prompt opens in `context` or its owning tab. Returns `None` for the prompt.
     pub async fn race_prompt<T>(
         &self,
+        context: &str,
         fut: impl Future<Output = Result<T, String>>,
     ) -> Result<Option<T>, String> {
         let mut events = self.bidi.subscribe();
@@ -222,7 +223,8 @@ impl FirefoxSession {
                 e = events.recv() => match e {
                     Ok(e) if e["method"] == "browsingContext.userPromptOpened"
                         && e["params"]["handler"] != "accept"
-                        && e["params"]["context"] == self.context.as_str() => return Ok(None),
+                        && [context, &self.context, &self.top_context]
+                            .contains(&e["params"]["context"].as_str().unwrap_or_default()) => return Ok(None),
                     Err(broadcast::error::RecvError::Closed) => return fut.await.map(Some),
                     _ => {}
                 },
@@ -444,7 +446,7 @@ pub(crate) mod tests {
     async fn race_prompt_returns_none_when_a_prompt_opens_on_the_active_context() {
         let (s, tx, _) = fake_session().await;
         let hang = std::future::pending::<Result<(), String>>();
-        let racer = s.race_prompt(hang);
+        let racer = s.race_prompt("ctx-active", hang);
         tokio::pin!(racer);
         assert!(tokio::time::timeout(Duration::from_millis(50), &mut racer)
             .await
