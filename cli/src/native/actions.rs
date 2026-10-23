@@ -4341,6 +4341,14 @@ async fn apply_session_setup(state: &mut DaemonState, session_id: &str) -> Resul
     Ok(())
 }
 
+/// Replaces the stored proxy credentials with the launch options, clearing them when absent.
+async fn store_proxy_credentials(state: &DaemonState, options: &LaunchOptions) {
+    *state.proxy_credentials.write().await = options
+        .proxy_username
+        .clone()
+        .map(|user| (user, options.proxy_password.clone().unwrap_or_default()));
+}
+
 async fn auto_launch(
     state: &mut DaemonState,
     plugins: Vec<crate::plugins::PluginConfig>,
@@ -4430,13 +4438,7 @@ async fn auto_launch_inner(
 
     // Store proxy credentials for Fetch.authRequired handling
     let has_proxy_auth = options.proxy_username.is_some();
-    if has_proxy_auth {
-        let mut creds = state.proxy_credentials.write().await;
-        *creds = Some((
-            options.proxy_username.clone().unwrap_or_default(),
-            options.proxy_password.clone().unwrap_or_default(),
-        ));
-    }
+    store_proxy_credentials(state, &options).await;
 
     state.engine = engine.as_deref().unwrap_or("chrome").to_string();
     write_engine_file(&state.session_id, &state.engine);
@@ -5310,6 +5312,7 @@ async fn launch_firefox(
         storage_state: options.storage_state.as_deref(),
     })?;
     options.restrict_webrtc = !allowed_domains.is_empty();
+    store_proxy_credentials(state, &options).await;
     let hash = launch_hash(
         &options,
         &allowed_domains,
@@ -5450,13 +5453,23 @@ async fn handle_launch_inner(cmd: &Value, state: &mut DaemonState) -> Result<Val
             .and_then(|v| v.get("username"))
             .and_then(|v| v.as_str())
             .map(String::from)
-            .or_else(|| env::var("AGENT_BROWSER_PROXY_USERNAME").ok()),
+            .or_else(|| {
+                cmd.get("proxy")
+                    .is_none()
+                    .then(|| env::var("AGENT_BROWSER_PROXY_USERNAME").ok())
+                    .flatten()
+            }),
         proxy_password: cmd
             .get("proxy")
             .and_then(|v| v.get("password"))
             .and_then(|v| v.as_str())
             .map(String::from)
-            .or_else(|| env::var("AGENT_BROWSER_PROXY_PASSWORD").ok()),
+            .or_else(|| {
+                cmd.get("proxy")
+                    .is_none()
+                    .then(|| env::var("AGENT_BROWSER_PROXY_PASSWORD").ok())
+                    .flatten()
+            }),
         profile,
         allow_file_access: cmd
             .get("allowFileAccess")
@@ -5524,10 +5537,6 @@ async fn handle_launch_inner(cmd: &Value, state: &mut DaemonState) -> Result<Val
         )?;
         if let Some(domains) = &requested_allowed_domains {
             set_domain_filter(state, domains).await;
-        }
-        if let Some(user) = launch_options.proxy_username.clone() {
-            let pass = launch_options.proxy_password.clone().unwrap_or_default();
-            *state.proxy_credentials.write().await = Some((user, pass));
         }
         let result = launch_firefox(
             state,
@@ -5637,13 +5646,7 @@ async fn handle_launch_inner(cmd: &Value, state: &mut DaemonState) -> Result<Val
     // Store proxy credentials before any local or remote CDP branch enables
     // Fetch interception with authentication handling.
     let has_proxy_auth = launch_options.proxy_username.is_some();
-    if has_proxy_auth {
-        let mut creds = state.proxy_credentials.write().await;
-        *creds = Some((
-            launch_options.proxy_username.clone().unwrap_or_default(),
-            launch_options.proxy_password.clone().unwrap_or_default(),
-        ));
-    }
+    store_proxy_credentials(state, &launch_options).await;
 
     if let Some(url) = cdp_url {
         state.reset_input_state();
