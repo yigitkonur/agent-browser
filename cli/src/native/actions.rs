@@ -3217,11 +3217,9 @@ pub async fn execute_command(cmd: &Value, state: &mut DaemonState) -> Value {
 
     let mut result = match action {
         _ if firefox_routed => {
+            let before = state.firefox.as_ref().map(|ff| ff.top_context.clone());
             let result = bidi::actions::execute(action, cmd, state).await;
-            if matches!(
-                action,
-                "tab_new" | "tab_switch" | "tab_close" | "window_new"
-            ) {
+            if state.firefox.as_ref().map(|ff| ff.top_context.clone()) != before {
                 state.update_stream_client().await;
             }
             result

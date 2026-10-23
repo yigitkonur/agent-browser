@@ -255,6 +255,15 @@ impl StreamServer {
         *self.firefox_live.write().await = live;
     }
 
+    /// Context id the dashboard frames and input are currently pointed at.
+    pub async fn firefox_live_context(&self) -> Option<String> {
+        self.firefox_live
+            .read()
+            .await
+            .as_ref()
+            .map(|live| live.context.clone())
+    }
+
     /// True while at least one dashboard client is connected.
     pub async fn has_clients(&self) -> bool {
         *self.client_count.lock().await > 0

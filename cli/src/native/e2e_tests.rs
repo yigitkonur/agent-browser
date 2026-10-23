@@ -14753,6 +14753,68 @@ async fn e2e_firefox_core_flow_and_ref_stability() {
     assert!(!firefox_processes_using(tmp.path()));
 }
 
+/// `click --new-tab` moves the Firefox live view to the opened tab, even when its navigation fails.
+#[tokio::test]
+#[ignore = "requires FIREFOX_BIN; run serially"]
+async fn e2e_firefox_click_new_tab_retargets_live_view() {
+    required_firefox_binary();
+    let tmp = tempfile::tempdir().unwrap();
+    let _env = firefox_test_environment(tmp.path());
+    let fixture = firefox_fixture().await;
+    let mut state = DaemonState::new();
+    let (server, client_slot) = crate::native::stream::StreamServer::start_without_client(
+        0,
+        "firefox-live".to_string(),
+        true,
+        state.idle_activity.clone(),
+    )
+    .await
+    .unwrap();
+    let server = Arc::new(server);
+    state.stream_client = Some(client_slot);
+    state.stream_server = Some(Arc::clone(&server));
+    launch_firefox(&mut state, json!({})).await;
+    firefox_open(&mut state, &fixture.url).await;
+    let first = state.firefox.as_ref().unwrap().top_context.clone();
+    assert_eq!(
+        server.firefox_live_context().await.as_deref(),
+        Some(first.as_str())
+    );
+
+    firefox_eval(
+        &mut state,
+        "document.body.insertAdjacentHTML('beforeend', '<a href=\"http://127.0.0.1:1/\">Broken tab</a>')",
+    )
+    .await;
+    let broken = firefox_ref(&mut state, "Broken tab").await;
+    let failed = firefox_act(&mut state, "click", &broken, json!({ "newTab": true })).await;
+    assert_eq!(failed["success"], false, "{failed}");
+    let second = state.firefox.as_ref().unwrap().top_context.clone();
+    assert_ne!(second, first);
+    assert_eq!(
+        server.firefox_live_context().await.as_deref(),
+        Some(second.as_str())
+    );
+
+    firefox_open(&mut state, &fixture.url).await;
+    firefox_eval(
+        &mut state,
+        "document.body.insertAdjacentHTML('beforeend', '<a href=\"/frame.html\">Live tab</a>')",
+    )
+    .await;
+    let link = firefox_ref(&mut state, "Live tab").await;
+    assert_success(&firefox_act(&mut state, "click", &link, json!({ "newTab": true })).await);
+    let third = state.firefox.as_ref().unwrap().top_context.clone();
+    assert_ne!(third, second);
+    assert_eq!(
+        server.firefox_live_context().await.as_deref(),
+        Some(third.as_str())
+    );
+
+    firefox_close(&mut state).await;
+    server.shutdown().await;
+}
+
 /// PR2: a confirm() dialog is resolved with `dialog accept`.
 #[tokio::test]
 #[ignore = "requires FIREFOX_BIN; run serially"]
