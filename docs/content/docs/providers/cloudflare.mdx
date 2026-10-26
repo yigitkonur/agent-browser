@@ -1,0 +1,52 @@
+---
+title: "Cloudflare Browser Run"
+navTitle: "Cloudflare"
+---
+
+Cloudflare Browser Run supplies an isolated remote browser controlled by the native agent-browser CDP client. This fork creates and owns its sessions; [Browser Run pricing](https://developers.cloudflare.com/browser-run/pricing/) charges for browser hours and concurrent browsers.
+
+## Setup
+
+Install this fork and its optional Playwright dependency. Set a Cloudflare account ID and a token with Browser Rendering Edit permission. Never pass the token as a command-line argument.
+
+```bash
+export CLOUDFLARE_ACCOUNT_ID="your-account-id"
+export CLOUDFLARE_API_TOKEN="your-api-token"
+export CLOUDFLARE_PROFILE_MODE=none
+agent-browser -p cloudflare open https://example.com
+agent-browser snapshot -i
+agent-browser close
+```
+
+`AGENT_BROWSER_PROVIDER=cloudflare` selects the provider for subsequent commands. The Playwright companion is included in the npm package. In a source checkout, install dependencies with `pnpm install` and build the Rust CLI.
+
+## Profiles and compatibility gate
+
+The companion uses the existing Cloudflare plugin's profile directory and lock protocol. `CLOUDFLARE_PROFILE` selects the profile name, defaulting to `main`. `CLOUDFLARE_PROFILE_MODE=read` loads a saved profile without writing changes; `none` creates an empty context.
+
+The default `write` mode is currently disabled before session creation. Local Chrome context-sharing and storage tests do not establish Cloudflare compatibility. Write mode must remain disabled until an isolated live Cloudflare test proves both clients share the same context and cookies, local storage, and IndexedDB round-trip safely, and the two tools have a tested cross-process locking protocol that prevents stale takeover during writes. This protects existing profile files from partial overwrites.
+
+```bash
+agent-browser cloudflare profile clone main main-copy
+agent-browser cloudflare profile restore main
+```
+
+Clone copies the last saved state to a new profile; it does not include changes still held in an active browser. Restore is currently disabled until crash-safe recovery is verified. Generic agent-browser state save and load are also unavailable for Cloudflare contexts because they cannot safely capture every origin and IndexedDB.
+
+## Live View and human handoff
+
+```bash
+agent-browser cloudflare live-view
+agent-browser cloudflare handoff "Please sign in"
+agent-browser cloudflare wait
+```
+
+Live View URLs are sensitive. Share them only with the intended operator. While a handoff is active or its result is uncertain, browser automation is blocked. Repeat `wait` until the handoff ends; a successful writable-profile handoff requires a successful save before automation resumes.
+
+## Session lifecycle
+
+The daemon closes its Cloudflare browser after five minutes of local inactivity or 30 minutes of session age by default. Set `CLOUDFLARE_IDLE_TIMEOUT_MS` and `CLOUDFLARE_MAX_SESSION_MS` to adjust these limits. `CLOUDFLARE_KEEP_ALIVE_MS` controls Cloudflare's inactivity backstop; by default it is one minute longer than the local idle limit. Browser activity can extend this backstop, so it is not a maximum session age.
+
+The daemon records only sessions it creates. If closure is unconfirmed, it preserves the record and reports an error. `agent-browser cloudflare sessions` lists owned records, and `agent-browser cloudflare cleanup` retries abandoned sessions. Automatic recovery conservatively skips records belonging to a live process; on non-Unix platforms it does not automatically recover abandoned records. If creation times out before a session ID is returned, inspect the Cloudflare dashboard before retrying.
+
+Generic `--allowed-domains` is disabled for Cloudflare until containment of all context targets is verified. A daemon restart cleans up owned sessions instead of restoring an in-progress handoff.

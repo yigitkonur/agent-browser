@@ -9,6 +9,10 @@ pub mod browser;
 #[allow(dead_code)]
 pub mod cdp;
 #[allow(dead_code)]
+pub mod cloudflare_handoff;
+#[allow(dead_code)]
+pub mod cloudflare_profile;
+#[allow(dead_code)]
 pub mod cookies;
 #[allow(dead_code)]
 pub mod daemon;

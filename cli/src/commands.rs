@@ -132,6 +132,7 @@ pub fn is_top_level_command(value: &str) -> bool {
             | "confirm"
             | "deny"
             | "connect"
+            | "cloudflare"
             | "stream"
             | "get"
             | "is"
@@ -1393,6 +1394,20 @@ fn parse_command_inner(args: &[String], flags: &Flags) -> Result<Value, ParseErr
 
         // === Set (browser settings) ===
         "set" => parse_set(&rest, &id),
+
+        "cloudflare" => match rest.as_slice() {
+            ["live-view"] => Ok(json!({"id": id, "action": "cloudflare_live_view"})),
+            ["handoff", instructions] if !instructions.trim().is_empty() => Ok(json!({"id": id, "action": "cloudflare_handoff", "instructions": instructions})),
+            ["wait"] => Ok(json!({"id": id, "action": "cloudflare_wait"})),
+            ["sessions"] => Ok(json!({"id": id, "action": "cloudflare_sessions"})),
+            ["cleanup"] => Ok(json!({"id": id, "action": "cloudflare_cleanup"})),
+            ["profile", "clone", from, to] => Ok(json!({"id": id, "action": "cloudflare_profile_clone", "from": from, "to": to})),
+            ["profile", "restore", profile] => Ok(json!({"id": id, "action": "cloudflare_profile_restore", "profile": profile})),
+            _ => Err(ParseError::MissingArguments {
+                context: "cloudflare".to_string(),
+                usage: "cloudflare <live-view|handoff <instructions>|wait|sessions|cleanup|profile clone <from> <to>|profile restore <name>>",
+            }),
+        },
 
         // === Network ===
         "network" => parse_network(&rest, &id),
@@ -3581,6 +3596,32 @@ pub fn shell_words_split(s: &str) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn cloudflare_commands_validate_and_preserve_instructions() {
+        let input = vec![
+            "cloudflare".into(),
+            "handoff".into(),
+            "Log in using MFA".into(),
+        ];
+        let parsed = super::parse_command(&input, &default_flags()).unwrap();
+        assert_eq!(parsed["action"], "cloudflare_handoff");
+        assert_eq!(parsed["instructions"], "Log in using MFA");
+        for (command, action) in [
+            ("live-view", "cloudflare_live_view"),
+            ("wait", "cloudflare_wait"),
+            ("sessions", "cloudflare_sessions"),
+            ("cleanup", "cloudflare_cleanup"),
+        ] {
+            let parsed =
+                super::parse_command(&["cloudflare".into(), command.into()], &default_flags())
+                    .unwrap();
+            assert_eq!(parsed["action"], action);
+        }
+        assert!(
+            super::parse_command(&["cloudflare".into(), "handoff".into()], &default_flags())
+                .is_err()
+        );
+    }
     use super::*;
 
     fn default_flags() -> Flags {

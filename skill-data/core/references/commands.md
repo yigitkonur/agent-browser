@@ -573,3 +573,20 @@ AGENT_BROWSER_PLUGINS='[{"name":"vault","command":"agent-browser-plugin-vault","
 ```
 
 Browser Use Cloud lifecycle: setup is bounded to 18s plus up to 4s for timeout cleanup (10s create, 8s CDP attach, 4s stop). `close` succeeds only after the Cloud session acknowledges it stopped; a failed stop returns an error, keeps the session id for retrying `close`, and blocks a new launch until released. If create fails before an id arrives, the outcome is unknown; inspect the Browser Use Cloud dashboard before retrying. If the daemon exits before a successful stop, inspect and stop the browser in Cloud.
+
+
+## Cloudflare Browser Run
+
+```bash
+CLOUDFLARE_PROFILE_MODE=none agent-browser -p cloudflare open https://example.com
+agent-browser cloudflare live-view
+agent-browser cloudflare handoff "Please sign in"
+agent-browser cloudflare wait
+agent-browser cloudflare sessions
+agent-browser cloudflare cleanup
+agent-browser cloudflare profile clone main main-copy
+agent-browser cloudflare profile restore main
+agent-browser close
+```
+
+Set the Cloudflare account and API token in `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN`. Shared profile writes remain disabled until the live compatibility gate passes; `read` imports a profile without write-back, and `none` starts empty. The provider releases owned sessions on close and retains a recovery record when remote closure is unconfirmed.

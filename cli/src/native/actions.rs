@@ -753,6 +753,10 @@ pub struct DaemonState {
     /// This is tracked separately from cleanup metadata because provider
     /// plugins are allowed to omit a close-session payload.
     active_provider_connection: bool,
+    cloudflare_profile: Option<super::cloudflare_profile::ProfileCompanion>,
+    cloudflare_started_at: Option<std::time::Instant>,
+    /// Pending Cloudflare human handoff; automation remains blocked while active.
+    cloudflare_handoff: Option<super::cloudflare_handoff::Handoff>,
     /// Actions already approved while replaying a confirmed command.
     confirmed_policy_actions: HashSet<String>,
     /// Strict session-to-tab binding (`--pin-tab` / AGENT_BROWSER_PIN_TAB).
@@ -885,6 +889,9 @@ impl DaemonState {
             plugin_init_scripts: Vec::new(),
             active_provider_session: None,
             active_provider_connection: false,
+            cloudflare_profile: None,
+            cloudflare_started_at: None,
+            cloudflare_handoff: None,
             confirmed_policy_actions: HashSet::new(),
             pin_tab,
             last_persisted_binding: None,
@@ -1777,7 +1784,11 @@ impl DaemonState {
                             if let Ok(te) =
                                 serde_json::from_value::<TargetCreatedEvent>(event.params.clone())
                             {
-                                if should_track_target(&te.target_info) {
+                                if should_track_target(&te.target_info)
+                                    && self.browser.as_ref().is_none_or(|b| {
+                                        b.should_track_context_target(&te.target_info)
+                                    })
+                                {
                                     let already_tracked = self
                                         .browser
                                         .as_ref()
@@ -1794,7 +1805,11 @@ impl DaemonState {
                             if let Ok(te) = serde_json::from_value::<TargetInfoChangedEvent>(
                                 event.params.clone(),
                             ) {
-                                if should_track_target(&te.target_info) {
+                                if should_track_target(&te.target_info)
+                                    && self.browser.as_ref().is_none_or(|b| {
+                                        b.should_track_context_target(&te.target_info)
+                                    })
+                                {
                                     // If this target is not yet tracked (e.g. it was
                                     // initially filtered because its URL was
                                     // chrome://newtab/), promote it to a new target
@@ -1868,6 +1883,13 @@ impl DaemonState {
                                 match serde_json::from_value::<TargetInfo>(
                                     target_info_value.clone(),
                                 ) {
+                                    Ok(target_info)
+                                        if self.browser.as_ref().is_some_and(|b| {
+                                            !b.should_track_context_target(&target_info)
+                                        }) =>
+                                    {
+                                        attached_other_sessions.push(sid.to_string());
+                                    }
                                     // The recorder's screencast session is
                                     // not a tab and must not have page
                                     // domains enabled on it.
@@ -2543,13 +2565,43 @@ fn has_active_browser_session(state: &DaemonState) -> bool {
     state.browser.is_some() || state.active_provider_session.is_some()
 }
 
-async fn close_before_implicit_relaunch(state: &mut DaemonState) -> Result<(), String> {
-    let browser_use = state
+fn is_cloudflare_session(state: &DaemonState) -> bool {
+    state
         .active_provider_session
         .as_ref()
-        .is_some_and(|active| provider_is_browser_use(&active.session.provider));
+        .is_some_and(|active| active.session.provider == "cloudflare")
+}
+
+impl DaemonState {
+    /// Cloudflare sessions are billed until released, even while the daemon is idle.
+    pub(crate) fn cloudflare_lifecycle_expired(&self) -> bool {
+        let Some(started) = self.cloudflare_started_at else {
+            return false;
+        };
+        let Ok((idle_ms, max_ms)) = providers::cloudflare_idle_and_max() else {
+            return true;
+        };
+        if started.elapsed() >= std::time::Duration::from_millis(max_ms) {
+            return true;
+        }
+        let handoff_active = self
+            .cloudflare_handoff
+            .as_ref()
+            .is_some_and(|h| h.blocks_actions());
+        !handoff_active && self.idle_activity.elapsed() >= std::time::Duration::from_millis(idle_ms)
+    }
+}
+
+async fn close_before_implicit_relaunch(state: &mut DaemonState) -> Result<(), String> {
+    let requires_confirmed_cleanup = state
+        .active_provider_session
+        .as_ref()
+        .is_some_and(|active| {
+            provider_is_browser_use(&active.session.provider)
+                || active.session.provider == "cloudflare"
+        });
     let result = close_current_browser(state).await;
-    if browser_use {
+    if requires_confirmed_cleanup {
         result
     } else {
         Ok(())
@@ -2589,6 +2641,19 @@ async fn attach_provider_cdp(
     plugins: &[crate::plugins::PluginConfig],
 ) -> Result<BrowserManager, String> {
     remember_active_provider_session(state, conn.session.clone(), plugins);
+    let context_id = if provider.eq_ignore_ascii_case("cloudflare") {
+        let session = conn
+            .session
+            .as_ref()
+            .ok_or("Cloudflare session identity is missing")?;
+        let (companion, context_id) =
+            super::cloudflare_profile::ProfileCompanion::start(&conn.ws_url, &session.session_id)
+                .await?;
+        state.cloudflare_profile = Some(companion);
+        Some(context_id)
+    } else {
+        None
+    };
     if provider_is_browser_use(provider)
         && !url::Url::parse(&conn.ws_url).is_ok_and(|url| {
             matches!(url.scheme(), "ws" | "wss" | "http" | "https") && url.host_str().is_some()
@@ -2597,7 +2662,9 @@ async fn attach_provider_cdp(
         return Err("Browser Use did not return a usable cdpUrl".to_string());
     }
     let attach = async {
-        if conn.direct_page {
+        if let Some(context_id) = context_id {
+            BrowserManager::connect_cdp_in_context(&conn.ws_url, ws_headers, context_id).await
+        } else if conn.direct_page {
             BrowserManager::connect_cdp_direct(&conn.ws_url).await
         } else if ws_headers.is_some() {
             BrowserManager::connect_cdp_with_headers(&conn.ws_url, ws_headers).await
@@ -2605,17 +2672,29 @@ async fn attach_provider_cdp(
             BrowserManager::connect_cdp(&conn.ws_url).await
         }
     };
-    if provider_is_browser_use(provider) {
+    let result = if provider_is_browser_use(provider) || provider.eq_ignore_ascii_case("cloudflare")
+    {
+        let provider_label = if provider_is_browser_use(provider) {
+            "Browser Use"
+        } else {
+            "Cloudflare"
+        };
         match tokio::time::timeout(BROWSER_USE_ATTACH_DEADLINE, attach).await {
-            Ok(result) => result.map_err(|_| "Browser Use CDP attachment failed".to_string()),
+            Ok(result) => result.map_err(|_| format!("{provider_label} CDP attachment failed")),
             Err(_) => Err(format!(
-                "Browser Use CDP attachment timed out after {}s",
+                "{provider_label} CDP attachment timed out after {}s",
                 BROWSER_USE_ATTACH_DEADLINE.as_secs()
             )),
         }
     } else {
         attach.await
+    };
+    if result.is_err() {
+        if let Some(companion) = state.cloudflare_profile.as_mut() {
+            let _ = companion.close_context().await;
+        }
     }
+    result
 }
 
 fn combine_provider_failure(context: String, cleanup_error: Option<String>) -> String {
@@ -2634,6 +2713,10 @@ fn remember_active_provider_session(
     plugins: &[crate::plugins::PluginConfig],
 ) {
     state.active_provider_connection = true;
+    state.cloudflare_started_at = session
+        .as_ref()
+        .filter(|s| s.provider == "cloudflare")
+        .map(|_| std::time::Instant::now());
     state.active_provider_session = session.map(|session| ActiveProviderSession {
         session,
         plugins: plugins.to_vec(),
@@ -2644,12 +2727,28 @@ async fn close_active_provider_session(state: &mut DaemonState) -> Result<(), St
     if let Some(active) = state.active_provider_session.as_ref() {
         providers::close_provider_session_with_plugins(&active.session, &active.plugins).await?;
     }
+    if let Some(mut companion) = state.cloudflare_profile.take() {
+        if companion.release().await.is_err() {
+            companion.terminate().await;
+        }
+    }
     state.active_provider_session = None;
     state.active_provider_connection = false;
     Ok(())
 }
 
 pub(crate) async fn close_current_browser(state: &mut DaemonState) -> Result<(), String> {
+    state.cloudflare_started_at = None;
+    state.cloudflare_handoff = None;
+    let mut profile_error = None;
+    if let Some(companion) = state.cloudflare_profile.as_mut() {
+        if companion.mode == "write" {
+            profile_error = companion.save().await.err();
+        }
+        if let Err(error) = companion.close_context().await {
+            profile_error.get_or_insert(error);
+        }
+    }
     let browser = state.browser.take();
     state.launch_hash = None;
     state.webmcp_enabled = false;
@@ -2674,6 +2773,13 @@ pub(crate) async fn close_current_browser(state: &mut DaemonState) -> Result<(),
             browser_error, provider_error
         )),
         (error, None) | (None, error) => error,
+    };
+    let close_error = match (close_error, profile_error) {
+        (Some(cleanup), Some(profile)) => Some(format!(
+            "{cleanup} (profile cleanup also failed: {profile})"
+        )),
+        (Some(error), None) | (None, Some(error)) => Some(error),
+        (None, None) => None,
     };
     if let Some(err) = close_error {
         return Err(err);
@@ -2762,6 +2868,13 @@ fn skip_launch_action(action: &str) -> bool {
             | "stream_enable"
             | "stream_disable"
             | "stream_status"
+            | "cloudflare_live_view"
+            | "cloudflare_handoff"
+            | "cloudflare_wait"
+            | "cloudflare_sessions"
+            | "cloudflare_cleanup"
+            | "cloudflare_profile_clone"
+            | "cloudflare_profile_restore"
             | "session_info"
             | "webmcp_result"
             | "webmcp_cancel"
@@ -2856,6 +2969,32 @@ pub async fn execute_command(cmd: &Value, state: &mut DaemonState) -> Value {
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .to_string();
+
+    if is_cloudflare_session(state)
+        && (cmd.get("storageState").is_some() || cmd.get("restoreKey").is_some())
+    {
+        return error_response(
+            &id,
+            "Generic state restore is not supported with Cloudflare profile contexts",
+        );
+    }
+
+    if state
+        .cloudflare_handoff
+        .as_ref()
+        .is_some_and(|handoff| handoff.blocks_actions())
+        && !matches!(
+            action,
+            "cloudflare_wait"
+                | "cloudflare_live_view"
+                | "cloudflare_sessions"
+                | "cloudflare_cleanup"
+                | "close"
+                | INTERNAL_DAEMON_SHUTDOWN_ACTION
+        )
+    {
+        return error_response(&id, "Cloudflare human handoff is active; wait for completion before running browser commands");
+    }
 
     let cmd_start = std::time::Instant::now();
 
@@ -3190,6 +3329,22 @@ pub async fn execute_command(cmd: &Value, state: &mut DaemonState) -> Value {
         "url" => handle_url(state).await,
         "cdp_url" => handle_cdp_url(state),
         "inspect" => handle_inspect(state).await,
+        "cloudflare_live_view" | "cloudflare_handoff" | "cloudflare_wait" => {
+            handle_cloudflare_action(action, cmd, state).await
+        }
+        "cloudflare_sessions" => providers::cloudflare_owned_status().await,
+        "cloudflare_cleanup" => providers::retry_cloudflare_owned().await,
+        "cloudflare_profile_clone" => {
+            super::cloudflare_profile::manage(
+                "clone",
+                json!({"from": cmd.get("from"), "to": cmd.get("to")}),
+            )
+            .await
+        }
+        "cloudflare_profile_restore" => {
+            super::cloudflare_profile::manage("restore", json!({"profile": cmd.get("profile")}))
+                .await
+        }
         "title" => handle_title(state).await,
         "content" => handle_content(state).await,
         "evaluate" => handle_evaluate(cmd, state).await,
@@ -3485,7 +3640,7 @@ pub async fn execute_command(cmd: &Value, state: &mut DaemonState) -> Value {
             .get("status")
             .and_then(|v| v.as_str())
             .is_some_and(|s| s == "success");
-        let data = resp.get("data").cloned().unwrap_or(Value::Null);
+        let data = stream_safe_result(action, resp.get("data").cloned().unwrap_or(Value::Null));
         server.broadcast_result(&id, action, success, &data, duration_ms);
 
         if let Some(ref mgr) = state.browser {
@@ -3498,6 +3653,16 @@ pub async fn execute_command(cmd: &Value, state: &mut DaemonState) -> Value {
     }
 
     resp
+}
+
+/// Live View URLs are bearer capabilities intended only for the requester.
+fn stream_safe_result(action: &str, mut data: Value) -> Value {
+    if matches!(action, "cloudflare_live_view" | "cloudflare_handoff") {
+        if let Some(object) = data.as_object_mut() {
+            object.remove("url");
+        }
+    }
+    data
 }
 
 fn auto_launch_error_context(has_cdp: bool) -> &'static str {
@@ -3809,6 +3974,9 @@ fn ensure_allowed_domains_supported_for_launch(
 
     if let Some(provider) = support.provider_name {
         match provider.to_lowercase().as_str() {
+            "cloudflare" => {
+                return Err("--allowed-domains is not supported with Cloudflare until containment of all context targets is verified".to_string());
+            }
             "ios" => {
                 return Err(
                     "--allowed-domains is not supported with the iOS provider because WebRTC containment cannot be enforced"
@@ -4147,6 +4315,21 @@ async fn install_network_controls_or_resume_prepared_session(
 }
 
 const BROWSER_USE_SETUP_DEADLINE: std::time::Duration = std::time::Duration::from_secs(18);
+const CLOUDFLARE_SETUP_DEADLINE: std::time::Duration = std::time::Duration::from_secs(100);
+
+async fn cloudflare_setup_timeout(state: &mut DaemonState) -> String {
+    let message = "Cloudflare setup timed out; its creation outcome may be unknown, inspect Cloudflare before retrying";
+    match tokio::time::timeout(
+        std::time::Duration::from_secs(60),
+        close_current_browser(state),
+    )
+    .await
+    {
+        Ok(Ok(())) => message.to_string(),
+        Ok(Err(error)) => combine_provider_failure(message.to_string(), Some(error)),
+        Err(_) => format!("{message}; cleanup timed out, inspect owned sessions and retry cleanup"),
+    }
+}
 
 async fn browser_use_setup_timeout(state: &mut DaemonState) -> String {
     let message = "Browser Use setup timed out; inspect Browser Use Cloud before retrying";
@@ -4323,23 +4506,29 @@ async fn auto_launch(
             .await
             .map(|_| ());
     }
+    let provider = env::var("AGENT_BROWSER_PROVIDER").unwrap_or_default();
+    let is_cloudflare = provider.eq_ignore_ascii_case("cloudflare");
     if env::var("AGENT_BROWSER_CDP").is_ok()
         || env::var("AGENT_BROWSER_AUTO_CONNECT").is_ok()
-        || !env::var("AGENT_BROWSER_PROVIDER")
-            .is_ok_and(|provider| provider_is_browser_use(&provider))
+        || (!provider_is_browser_use(&provider) && !is_cloudflare)
     {
-        return auto_launch_inner(state, plugins).await;
+        return Box::pin(auto_launch_inner(state, plugins)).await;
     }
     let credentials = state.proxy_credentials.read().await.clone();
     let scripts = state.plugin_init_scripts.clone();
     let setup = state.session_setup.clone();
     let result = match tokio::time::timeout(
-        BROWSER_USE_SETUP_DEADLINE,
-        auto_launch_inner(state, plugins),
+        if is_cloudflare {
+            CLOUDFLARE_SETUP_DEADLINE
+        } else {
+            BROWSER_USE_SETUP_DEADLINE
+        },
+        Box::pin(auto_launch_inner(state, plugins)),
     )
     .await
     {
         Ok(result) => result,
+        Err(_) if is_cloudflare => Err(cloudflare_setup_timeout(state).await),
         Err(_) => Err(browser_use_setup_timeout(state).await),
     };
     if result.is_err() {
@@ -4499,6 +4688,12 @@ async fn auto_launch_inner(
         })?;
         // ios/safari are device providers handled via explicit launch command
         if !p.is_empty() && p != "ios" && p != "safari" {
+            if p == "cloudflare" && (storage_state_path.is_some() || state.session_name.is_some()) {
+                return Err(
+                    "Generic state restore is not supported with Cloudflare profile contexts"
+                        .into(),
+                );
+            }
             let conn = providers::connect_provider_with_plugins(&p, &plugins).await?;
             if conn.direct_page && !allowed_domains.is_empty() {
                 if let Some(ref ps) = conn.session {
@@ -4506,11 +4701,7 @@ async fn auto_launch_inner(
                 }
                 return Err(direct_page_allowed_domains_error());
             }
-            let ws_headers = if p == "agentcore" {
-                providers::take_agentcore_ws_headers()
-            } else {
-                None
-            };
+            let ws_headers = conn.ws_headers.clone();
             match attach_provider_cdp(&p, &conn, ws_headers, state, &plugins).await {
                 Ok(mgr) => {
                     let hash = launch_hash(
@@ -4846,6 +5037,9 @@ fn no_xvfb_from_launch_cmd(cmd: &Value) -> bool {
 }
 
 async fn try_auto_restore_state(state: &mut DaemonState) {
+    if is_cloudflare_session(state) {
+        return;
+    }
     state.restore_skipped_origins.clear();
     let session_name = match state.session_name.as_deref() {
         Some(n) if !n.is_empty() => n.to_string(),
@@ -5013,6 +5207,9 @@ pub(crate) async fn maybe_autosave_restore_state(state: &mut DaemonState, interv
 pub(crate) async fn auto_save_restore_state(
     state: &mut DaemonState,
 ) -> Result<Option<String>, String> {
+    if is_cloudflare_session(state) {
+        return Ok(None);
+    }
     validate_restore_if_pending(state).await;
 
     let Some(session_name) = state.session_name.clone() else {
@@ -5080,6 +5277,11 @@ pub(crate) async fn auto_save_restore_state(
 /// Explicit launch should surface this error. Best-effort callers can ignore
 /// the returned `Result` and keep their previous behavior.
 async fn load_storage_state(state: &mut DaemonState, path: &Option<String>) -> Result<(), String> {
+    if is_cloudflare_session(state) && path.is_some() {
+        return Err(
+            "Generic state restore is not supported with Cloudflare profile contexts".into(),
+        );
+    }
     if let Some(ref path) = path {
         ensure_state_replay_supported_by_active_domain_filter(state, "--state/storageState")
             .await?;
@@ -5153,22 +5355,37 @@ async fn handle_launch_for_target(
     state: &mut DaemonState,
     deadline: std::time::Duration,
 ) -> Result<Value, String> {
+    let is_cloudflare = cmd
+        .get("provider")
+        .and_then(Value::as_str)
+        .is_some_and(|p| p.eq_ignore_ascii_case("cloudflare"));
     if cmd.get("cdpUrl").and_then(Value::as_str).is_some()
         || cmd.get("cdpPort").and_then(Value::as_u64).is_some()
         || cmd.get("autoConnect").and_then(Value::as_bool) == Some(true)
-        || !cmd
-            .get("provider")
-            .and_then(Value::as_str)
-            .is_some_and(provider_is_browser_use)
+        || (!is_cloudflare
+            && !cmd
+                .get("provider")
+                .and_then(Value::as_str)
+                .is_some_and(provider_is_browser_use))
     {
-        return handle_launch_inner(cmd, state).await;
+        return Box::pin(handle_launch_inner(cmd, state)).await;
     }
     let filter = state.domain_filter.read().await.clone();
     let credentials = state.proxy_credentials.read().await.clone();
     let scripts = state.plugin_init_scripts.clone();
     let setup = state.session_setup.clone();
-    let result = match tokio::time::timeout(deadline, handle_launch_inner(cmd, state)).await {
+    let result = match tokio::time::timeout(
+        if is_cloudflare {
+            CLOUDFLARE_SETUP_DEADLINE
+        } else {
+            deadline
+        },
+        Box::pin(handle_launch_inner(cmd, state)),
+    )
+    .await
+    {
         Ok(result) => result,
+        Err(_) if is_cloudflare => Err(cloudflare_setup_timeout(state).await),
         Err(_) => Err(browser_use_setup_timeout(state).await),
     };
     if result.is_err() {
@@ -5196,6 +5413,15 @@ async fn handle_launch_inner(cmd: &Value, state: &mut DaemonState) -> Result<Val
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
     let provider_name = cmd.get("provider").and_then(|v| v.as_str());
+    if provider_name.is_some_and(|p| p.eq_ignore_ascii_case("cloudflare"))
+        && (cmd.get("storageState").is_some()
+            || cmd.get("restoreKey").is_some()
+            || state.session_name.is_some())
+    {
+        return Err(
+            "Generic state restore is not supported with Cloudflare profile contexts".into(),
+        );
+    }
     let enable_features =
         string_array_from_command(cmd, "enable").unwrap_or_else(launch_enable_features_from_env);
     let init_script_paths = string_array_from_command(cmd, "initScripts")
@@ -5533,11 +5759,7 @@ async fn handle_launch_inner(cmd: &Value, state: &mut DaemonState) -> Result<Val
                 }
                 let provider_metadata = conn.metadata.clone();
 
-                let ws_headers = if provider.eq_ignore_ascii_case("agentcore") {
-                    providers::take_agentcore_ws_headers()
-                } else {
-                    None
-                };
+                let ws_headers = conn.ws_headers.clone();
 
                 match attach_provider_cdp(provider, &conn, ws_headers, state, &command_plugins)
                     .await
@@ -5912,6 +6134,119 @@ async fn handle_read(cmd: &Value, state: &DaemonState) -> Result<Value, String> 
     ))
 }
 
+async fn handle_cloudflare_action(
+    action: &str,
+    cmd: &Value,
+    state: &mut DaemonState,
+) -> Result<Value, String> {
+    if !state
+        .active_provider_session
+        .as_ref()
+        .is_some_and(|active| active.session.provider == "cloudflare")
+    {
+        return Err("Cloudflare commands require an active Cloudflare provider session".into());
+    }
+    match action {
+        "cloudflare_live_view" => {
+            super::cloudflare_handoff::live_view(
+                state.browser.as_ref().ok_or("Browser not launched")?,
+            )
+            .await
+        }
+        "cloudflare_handoff" => {
+            if state
+                .cloudflare_handoff
+                .as_ref()
+                .is_some_and(|handoff| handoff.blocks_actions())
+            {
+                return Err("A Cloudflare handoff is already active".into());
+            }
+            let instructions = cmd
+                .get("instructions")
+                .and_then(Value::as_str)
+                .ok_or("Handoff instructions are required")?;
+            if instructions.trim().is_empty() || instructions.len() > 4096 {
+                return Err("Handoff instructions must contain 1 to 4096 characters".into());
+            }
+            if state.browser.is_none() {
+                return Err("Browser not launched".into());
+            }
+            // Existing dashboard and DevTools clients bypass the command guard.
+            // Fully shut them down before giving the human exclusive control.
+            if let Some(server) = state.inspect_server.take() {
+                server.shutdown().await;
+            }
+            if state.stream_server.is_some() {
+                handle_stream_disable(state).await?;
+            }
+            let result = super::cloudflare_handoff::start(
+                state.browser.as_ref().ok_or("Browser not launched")?,
+                instructions,
+            )
+            .await;
+            let (handoff, result) = match result {
+                Ok(result) => result,
+                Err(error) => {
+                    let client = state
+                        .browser
+                        .as_ref()
+                        .ok_or("Browser not launched")?
+                        .client
+                        .clone();
+                    state.cloudflare_handoff =
+                        Some(super::cloudflare_handoff::Handoff::uncertain(client));
+                    return Err(format!(
+                        "{error}; handoff status is unknown, run cloudflare wait to reconcile it"
+                    ));
+                }
+            };
+            state.cloudflare_handoff = Some(handoff);
+            Ok(result)
+        }
+        "cloudflare_wait" => {
+            let handoff = state
+                .cloudflare_handoff
+                .as_ref()
+                .ok_or("No Cloudflare handoff is known for this session")?;
+            if handoff.status()["status"] == "unknown" {
+                let browser = state.browser.as_ref().ok_or("Browser not launched")?;
+                let result = browser
+                    .client
+                    .send_command(
+                        "Cloudflare.getHandoffState",
+                        None,
+                        Some(browser.active_session_id()?),
+                    )
+                    .await?;
+                if result.get("active").and_then(Value::as_bool) == Some(false) {
+                    if let Some(companion) = state.cloudflare_profile.as_mut() {
+                        if companion.mode == "write" {
+                            companion.save().await?;
+                        }
+                    }
+                    handoff.resolve_unknown();
+                }
+                return Ok(handoff.status());
+            }
+            let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(20);
+            while handoff.active() && tokio::time::Instant::now() < deadline {
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
+            let result = handoff.status();
+            if result["status"] == "done" && result["acknowledged"] != true {
+                if let Some(companion) = state.cloudflare_profile.as_mut() {
+                    if companion.mode == "write" {
+                        companion.save().await?;
+                    }
+                }
+                handoff.acknowledge();
+            }
+            Ok(result)
+        }
+        _ => Err("Unknown Cloudflare command".into()),
+    }
+}
+
 fn handle_cdp_url(state: &DaemonState) -> Result<Value, String> {
     let mgr = state.browser.as_ref().ok_or("Browser not launched")?;
     Ok(json!({ "cdpUrl": mgr.get_cdp_url() }))
@@ -5922,7 +6257,7 @@ async fn handle_inspect(state: &mut DaemonState) -> Result<Value, String> {
 
     // Shut down any existing inspect server so we always target the current page
     if let Some(server) = state.inspect_server.take() {
-        server.shutdown();
+        server.shutdown().await;
     }
 
     let target_id = mgr.active_target_id()?.to_string();
@@ -6006,6 +6341,7 @@ async fn handle_evaluate(cmd: &Value, state: &DaemonState) -> Result<Value, Stri
 }
 
 async fn handle_close(state: &mut DaemonState) -> Result<Value, String> {
+    state.cloudflare_handoff = None;
     let save_result = auto_save_restore_state(state).await;
     close_all_browser_backends(state).await?;
     state.attached_target = None;
@@ -6021,7 +6357,7 @@ async fn handle_close(state: &mut DaemonState) -> Result<Value, String> {
     state.session_setup = SessionSetup::default();
 
     if let Some(server) = state.inspect_server.take() {
-        server.shutdown();
+        server.shutdown().await;
     }
 
     state.ref_map.invalidate_all_documents();
@@ -7556,6 +7892,9 @@ async fn handle_session_info(state: &DaemonState) -> Result<Value, String> {
 }
 
 async fn handle_state_save(cmd: &Value, state: &DaemonState) -> Result<Value, String> {
+    if is_cloudflare_session(state) {
+        return Err("Generic state save is not supported with Cloudflare profile contexts".into());
+    }
     let mgr = state.browser.as_ref().ok_or("Browser not launched")?;
     let session_id = mgr.active_session_id()?.to_string();
     let path = cmd.get("path").and_then(|v| v.as_str());
@@ -7574,6 +7913,9 @@ async fn handle_state_save(cmd: &Value, state: &DaemonState) -> Result<Value, St
 }
 
 async fn handle_state_load(cmd: &Value, state: &mut DaemonState) -> Result<Value, String> {
+    if is_cloudflare_session(state) {
+        return Err("Generic state load is not supported with Cloudflare profile contexts".into());
+    }
     let mgr = state.browser.as_ref().ok_or("Browser not launched")?;
     let session_id = mgr.active_session_id()?.to_string();
     let path = cmd
@@ -14150,6 +14492,47 @@ fn attach_tab_gone_data(resp: &mut Value, state: &DaemonState) {
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn cloudflare_rejects_generic_state_io() {
+        let mut state = super::DaemonState::new();
+        state.active_provider_session = Some(super::ActiveProviderSession {
+            session: super::providers::ProviderSession {
+                provider: "cloudflare".into(),
+                session_id: "test-id".into(),
+            },
+            plugins: Vec::new(),
+        });
+        assert!(super::handle_state_save(&serde_json::json!({}), &state)
+            .await
+            .unwrap_err()
+            .contains("not supported"));
+        assert!(super::handle_state_load(&serde_json::json!({}), &mut state)
+            .await
+            .unwrap_err()
+            .contains("not supported"));
+        assert_eq!(
+            super::auto_save_restore_state(&mut state).await.unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn cloudflare_max_age_expires_independent_of_idle() {
+        let mut state = super::DaemonState::new();
+        state.cloudflare_started_at =
+            Some(std::time::Instant::now() - std::time::Duration::from_secs(5 * 60 * 60));
+        assert!(state.cloudflare_lifecycle_expired());
+    }
+    #[test]
+    fn live_view_capabilities_are_excluded_from_stream_results() {
+        let data = json!({"url":"https://live.browser.run/token", "status":"active"});
+        for action in ["cloudflare_live_view", "cloudflare_handoff"] {
+            let safe = super::stream_safe_result(action, data.clone());
+            assert!(safe.get("url").is_none());
+            assert_eq!(safe["status"], "active");
+        }
+        assert_eq!(super::stream_safe_result("navigate", data.clone()), data);
+    }
     #[test]
     fn wedged_tab_replacement_follows_tab_policy() {
         let dir = tempfile::tempdir().unwrap();
@@ -16466,6 +16849,7 @@ printf '%s' '{"protocol":"agent-browser.plugin.v1","success":true,"data":{}}'
             let session = pending_browser_use_session().session;
             let conn = providers::ProviderConnection {
                 ws_url: endpoint.to_string(),
+                ws_headers: None,
                 session: Some(session.clone()),
                 direct_page: false,
                 metadata: None,

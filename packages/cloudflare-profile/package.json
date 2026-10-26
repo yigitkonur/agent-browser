@@ -1,0 +1,14 @@
+{
+  "name": "@agent-browser/cloudflare-profile",
+  "private": true,
+  "type": "module",
+  "version": "0.0.0",
+  "description": "Local Playwright companion for Cloudflare Browser Run profiles",
+  "license": "Apache-2.0",
+  "dependencies": {
+    "playwright": "1.64.0-alpha-1790635538000"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.mjs"
+  }
+}

@@ -33,7 +33,10 @@ assert.ok(
 const noindex = process.env.DOCS_EXPECT_NOINDEX === "1";
 const query = "?utm_source=route-test&value=a%2Fb&value=two";
 const agent = { "user-agent": "ClaudeBot/1.0", accept: "text/markdown" };
-const pageAt = (path) => pages.find((page) => page.path === path);
+// New fork-specific routes are public even though the frozen upstream baseline
+// deliberately contains only upstream routes.
+const pageAt = (path) => pages.find((page) => page.path === path)
+  ?? (path === "/providers/cloudflare" ? { path } : undefined);
 const legacyPath = (path) =>
   `/api/docs-markdown?path=${encodeURIComponent(path)}`;
 const htmlCache = new Map();
@@ -641,7 +644,7 @@ test("native search empty and unmatched queries return arrays, not legacy object
   }
 });
 
-test("sitemap contains exactly the 39 canonical production URLs", async () => {
+test("sitemap contains the upstream and Cloudflare canonical URLs", async () => {
   const response = await get("/sitemap.xml", { headers: agent });
   responseType(response, "application/xml");
   indexing(response);
@@ -652,7 +655,7 @@ test("sitemap contains exactly the 39 canonical production URLs", async () => {
   );
   assert.deepEqual(
     locations.sort(),
-    pages.map((page) => canonical(page.path)).sort(),
+    [...pages.map((page) => canonical(page.path)), canonical("/providers/cloudflare")].sort(),
   );
   assert.ok(
     !xml.includes("/en/") &&
@@ -662,7 +665,7 @@ test("sitemap contains exactly the 39 canonical production URLs", async () => {
 });
 
 for (const path of ["/llms.txt", "/sitemap.md"]) {
-  test(`${path}: agent index exposes all 39 public pages and Markdown alternatives exactly once`, async () => {
+  test(`${path}: agent index exposes all public pages and Markdown alternatives exactly once`, async () => {
     const response = await get(path, { headers: agent });
     responseType(
       response,
@@ -675,8 +678,7 @@ for (const path of ["/llms.txt", "/sitemap.md"]) {
     );
     assert.deepEqual(
       links.sort((a, b) => a[1].localeCompare(b[1])),
-      pages
-        .map((page) => [page.markdownTitle, canonical(page.path)])
+      [...pages.map((page) => [page.markdownTitle, canonical(page.path)]), ["Cloudflare Browser Run", canonical("/providers/cloudflare")]]
         .sort((a, b) => a[1].localeCompare(b[1])),
     );
     const markdownLinks = [...body.matchAll(/\[Markdown\]\(([^)]+)\)/g)].map(
@@ -684,7 +686,7 @@ for (const path of ["/llms.txt", "/sitemap.md"]) {
     );
     assert.deepEqual(
       markdownLinks.sort(),
-      pages.map((page) => `${origin}${markdownPath(page.path)}`).sort(),
+      [...pages.map((page) => `${origin}${markdownPath(page.path)}`), `${origin}${markdownPath("/providers/cloudflare")}`].sort(),
     );
     assert.ok(
       !body.includes("/en/") &&

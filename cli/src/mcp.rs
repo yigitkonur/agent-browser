@@ -151,6 +151,13 @@ const TOOL_REMOVE_INIT_SCRIPT: &str = "agent_browser_remove_init_script";
 const TOOL_CONFIRM: &str = "agent_browser_confirm";
 const TOOL_DENY: &str = "agent_browser_deny";
 const TOOL_CONNECT: &str = "agent_browser_connect";
+const TOOL_CF_LIVE_VIEW: &str = "agent_browser_cloudflare_live_view";
+const TOOL_CF_HANDOFF: &str = "agent_browser_cloudflare_handoff";
+const TOOL_CF_WAIT: &str = "agent_browser_cloudflare_wait";
+const TOOL_CF_SESSIONS: &str = "agent_browser_cloudflare_sessions";
+const TOOL_CF_CLEANUP: &str = "agent_browser_cloudflare_cleanup";
+const TOOL_CF_PROFILE_CLONE: &str = "agent_browser_cloudflare_profile_clone";
+const TOOL_CF_PROFILE_RESTORE: &str = "agent_browser_cloudflare_profile_restore";
 const TOOL_STREAM_ENABLE: &str = "agent_browser_stream_enable";
 const TOOL_STREAM_DISABLE: &str = "agent_browser_stream_disable";
 const TOOL_STREAM_STATUS: &str = "agent_browser_stream_status";
@@ -339,6 +346,13 @@ impl Default for McpConfig {
 
 const CORE_PROFILE_TOOLS: &[&str] = &[
     TOOL_TOOLS_PROFILES,
+    TOOL_CF_LIVE_VIEW,
+    TOOL_CF_HANDOFF,
+    TOOL_CF_WAIT,
+    TOOL_CF_SESSIONS,
+    TOOL_CF_CLEANUP,
+    TOOL_CF_PROFILE_CLONE,
+    TOOL_CF_PROFILE_RESTORE,
     TOOL_OPEN,
     TOOL_READ,
     TOOL_SNAPSHOT,
@@ -768,6 +782,13 @@ fn tools() -> Vec<Value> {
             json!({}),
             &[],
         ),
+        tool(TOOL_CF_LIVE_VIEW, "Cloudflare Live View", "Create a sensitive Live View URL for the active Cloudflare browser session.", json!({}), &[]),
+        tool(TOOL_CF_HANDOFF, "Cloudflare human handoff", "Request human control of the active Cloudflare browser tab. Automation is blocked until the handoff finishes.", json!({"instructions": {"type":"string", "minLength":1, "maxLength":4096}}), &["instructions"]),
+        tool(TOOL_CF_WAIT, "Wait for Cloudflare handoff", "Wait briefly for completion of an active human handoff. Repeat while status is active.", json!({}), &[]),
+        tool(TOOL_CF_SESSIONS, "List Cloudflare-owned sessions", "List Cloudflare session cleanup records owned by this agent-browser fork.", json!({}), &[]),
+        tool(TOOL_CF_CLEANUP, "Retry Cloudflare cleanup", "Retry cleanup of abandoned Cloudflare sessions owned by this agent-browser fork.", json!({}), &[]),
+        tool(TOOL_CF_PROFILE_CLONE, "Clone Cloudflare profile", "Clone a saved Cloudflare browser profile.", json!({"from":{"type":"string"},"to":{"type":"string"}}), &["from", "to"]),
+        tool(TOOL_CF_PROFILE_RESTORE, "Restore Cloudflare profile", "Swap a profile with its previous saved state.", json!({"profile":{"type":"string"}}), &["profile"]),
         tool(
             TOOL_OPEN,
             "Open page",
@@ -2265,6 +2286,25 @@ fn call_tool(params: Option<&Value>, config: &McpConfig) -> Result<Value, Protoc
 
     match name {
         TOOL_TOOLS_PROFILES => call_tools_profiles(config),
+        TOOL_CF_LIVE_VIEW => call_literal(arguments, &["cloudflare", "live-view"]),
+        TOOL_CF_HANDOFF => call_one_string(arguments, "cloudflare handoff", "instructions"),
+        TOOL_CF_WAIT => call_literal(arguments, &["cloudflare", "wait"]),
+        TOOL_CF_SESSIONS => call_literal(arguments, &["cloudflare", "sessions"]),
+        TOOL_CF_CLEANUP => call_literal(arguments, &["cloudflare", "cleanup"]),
+        TOOL_CF_PROFILE_CLONE => call_cli_tool(
+            arguments,
+            vec![
+                "cloudflare".into(),
+                "profile".into(),
+                "clone".into(),
+                required_string(arguments, "from")?,
+                required_string(arguments, "to")?,
+            ],
+            None,
+        ),
+        TOOL_CF_PROFILE_RESTORE => {
+            call_one_string(arguments, "cloudflare profile restore", "profile")
+        }
         TOOL_OPEN => call_open(arguments),
         TOOL_READ => call_read(arguments),
         TOOL_SNAPSHOT => call_snapshot(arguments),
@@ -4317,6 +4357,25 @@ fn write_json_line(stdout: &mut io::Stdout, value: &Value) -> io::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn cloudflare_tools_are_in_core_and_handoff_uses_cli_parser() {
+        for name in [
+            TOOL_CF_LIVE_VIEW,
+            TOOL_CF_HANDOFF,
+            TOOL_CF_WAIT,
+            TOOL_CF_SESSIONS,
+            TOOL_CF_CLEANUP,
+        ] {
+            assert!(CORE_PROFILE_TOOLS.contains(&name));
+            assert!(find_tool(name).is_some());
+        }
+        let mut args = command_parts("cloudflare handoff");
+        args.push("Please sign in".to_string());
+        let parsed =
+            crate::commands::parse_command(&args, &crate::flags::parse_flags(&args)).unwrap();
+        assert_eq!(parsed["action"], "cloudflare_handoff");
+        assert_eq!(parsed["instructions"], "Please sign in");
+    }
     #[test]
     fn tool_text_keeps_response_warnings() {
         let value = json!({ "success": true, "data": { "url": "about:blank" },

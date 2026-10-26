@@ -5,6 +5,7 @@
     "browser-use",
     "browserbase",
     "browserless",
+    "cloudflare",
     "kernel",
     "remote-agent-browser"
   ]

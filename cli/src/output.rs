@@ -550,6 +550,35 @@ fn print_primary_response(resp: &Response, action: Option<&str>, opts: &OutputOp
     if let Some(data) = &resp.data {
         print_lifecycle_note(data);
 
+        if matches!(
+            action,
+            Some(
+                "cloudflare_sessions"
+                    | "cloudflare_cleanup"
+                    | "cloudflare_profile_clone"
+                    | "cloudflare_profile_restore"
+            )
+        ) {
+            println!("{}", serde_json::to_string_pretty(data).unwrap_or_default());
+            return;
+        }
+
+        if matches!(
+            action,
+            Some("cloudflare_live_view" | "cloudflare_handoff" | "cloudflare_wait")
+        ) {
+            if let Some(url) = data.get("url").and_then(|value| value.as_str()) {
+                println!("Live View (sensitive): {url}");
+            }
+            if let Some(status) = data.get("status").and_then(|value| value.as_str()) {
+                println!("Handoff: {status}");
+                if status == "active" {
+                    println!("Run `agent-browser cloudflare wait` to check completion.");
+                }
+            }
+            return;
+        }
+
         // Dialog status response
         if action == Some("dialog") {
             if let Some(has_dialog) = data.get("hasDialog").and_then(|v| v.as_bool()) {
@@ -3583,6 +3612,28 @@ Examples:
 "##
         }
 
+        "cloudflare" => {
+            r##"
+agent-browser cloudflare - Cloudflare Browser Run handoff
+
+Usage:
+  agent-browser cloudflare live-view
+  agent-browser cloudflare handoff <instructions>
+  agent-browser cloudflare wait
+  agent-browser cloudflare sessions
+  agent-browser cloudflare cleanup
+  agent-browser cloudflare profile clone <from> <to>
+  agent-browser cloudflare profile restore <name>
+
+Live View, handoff, and wait require an active Cloudflare provider session.
+Profile restore is disabled until crash-safe recovery is verified.
+Live View URLs are sensitive.
+While a handoff is active, browser commands are blocked. Repeat wait while
+its status is active. A successful handoff remains blocked until wait has
+saved the writable profile.
+"##
+        }
+
         "profiles" => {
             r##"
 agent-browser profiles - List available Chrome profiles
@@ -3853,6 +3904,13 @@ Start here (for AI agents):
   skills path [name]           Print skill directory path
 
 Core Commands:
+  cloudflare live-view       Generate a Live View URL for the active Cloudflare session
+  cloudflare handoff <text>  Give a human control of the active Cloudflare tab
+  cloudflare wait            Wait briefly for handoff completion
+  cloudflare sessions        List owned Cloudflare session cleanup records
+  cloudflare cleanup         Retry cleanup for abandoned Cloudflare sessions
+  cloudflare profile clone   Clone a saved Cloudflare profile
+  cloudflare profile restore Restore a previous profile (currently disabled)
   open <url>                 Navigate to URL
   read [url]                 Fetch agent-readable text
   click <sel>                Click element (or @ref)
@@ -4182,7 +4240,14 @@ Environment:
   AGENT_BROWSER_CA_CERT          Path to CA certificate to trust (HTTPS interception proxies)
   AGENT_BROWSER_CLEAR_CA_CERT    Clear CA trust retained by the running browser session
   AGENT_BROWSER_USE_SYSTEM_CA    Use the OS trust store for CLI requests
-  AGENT_BROWSER_PROVIDER         Browser provider (ios, browserbase, kernel, browseruse, browserless, agentcore, or plugin name)
+  AGENT_BROWSER_PROVIDER         Browser provider (ios, browserbase, kernel, browseruse, browserless, agentcore, cloudflare, or plugin name)
+  CLOUDFLARE_ACCOUNT_ID          Cloudflare account ID
+  CLOUDFLARE_API_TOKEN           Cloudflare Browser Rendering Edit token
+  CLOUDFLARE_PROFILE             Cloudflare plugin profile name (default: main)
+  CLOUDFLARE_PROFILE_MODE        read or none; write is gated pending live verification
+  CLOUDFLARE_IDLE_TIMEOUT_MS     Cloudflare session idle timeout (default: 300000)
+  CLOUDFLARE_MAX_SESSION_MS      Cloudflare maximum session age (default: 1800000)
+  CLOUDFLARE_KEEP_ALIVE_MS       Cloudflare inactivity backstop
   BROWSER_USE_API_KEY            Browser Use Cloud API key
   BROWSER_USE_PROFILE_ID         Browser Use profile UUID
   BROWSER_USE_PROXY_COUNTRY      Managed proxy country; none/direct disables proxy

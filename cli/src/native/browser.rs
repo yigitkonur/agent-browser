@@ -453,6 +453,8 @@ pub struct BrowserManager {
     /// True when the CDP WebSocket is already scoped to a page target and
     /// browser-level Target.* commands are not available.
     direct_page: bool,
+    /// Restrict provider sessions to the context managed by a profile companion.
+    browser_context_id: Option<String>,
     /// Strict session-to-tab binding (`--pin-tab`). When enabled, the session
     /// never silently adopts another tab: if the bound tab goes away, page
     /// commands fail with a `tab_gone` error until the agent re-binds via
@@ -672,6 +674,7 @@ impl BrowserManager {
                 visited_origins: HashSet::new(),
                 next_tab_id: 1,
                 direct_page: false,
+                browser_context_id: None,
                 pin_tab: false,
                 bound_target_id: None,
                 bound_target_gone: None,
@@ -736,7 +739,7 @@ impl BrowserManager {
     }
 
     pub async fn connect_cdp(url: &str) -> Result<Self, String> {
-        Self::connect_cdp_inner(url, false, None).await
+        Self::connect_cdp_inner(url, false, None, None).await
     }
 
     /// Like [`Self::connect_cdp`], but first waits up to two seconds while the target
@@ -749,20 +752,30 @@ impl BrowserManager {
     /// Connect to a provider CDP proxy where the WebSocket IS the page session.
     /// Skips browser-level Target.* commands that most proxies don't support.
     pub async fn connect_cdp_direct(url: &str) -> Result<Self, String> {
-        Self::connect_cdp_inner(url, true, None).await
+        Self::connect_cdp_inner(url, true, None, None).await
     }
 
     pub async fn connect_cdp_with_headers(
         url: &str,
         headers: Option<Vec<(String, String)>>,
     ) -> Result<Self, String> {
-        Self::connect_cdp_inner(url, false, headers).await
+        Self::connect_cdp_inner(url, false, headers, None).await
+    }
+
+    /// Attach only to targets belonging to the supplied profile context.
+    pub async fn connect_cdp_in_context(
+        url: &str,
+        headers: Option<Vec<(String, String)>>,
+        context_id: String,
+    ) -> Result<Self, String> {
+        Self::connect_cdp_inner(url, false, headers, Some(context_id)).await
     }
 
     async fn connect_cdp_inner(
         url: &str,
         direct_page: bool,
         headers: Option<Vec<(String, String)>>,
+        browser_context_id: Option<String>,
     ) -> Result<Self, String> {
         let ws_url = resolve_cdp_url(url).await?;
         let client = Arc::new(CdpClient::connect_with_headers(&ws_url, headers).await?);
@@ -778,6 +791,7 @@ impl BrowserManager {
             visited_origins: HashSet::new(),
             next_tab_id: 1,
             direct_page,
+            browser_context_id,
             pin_tab: false,
             bound_target_id: None,
             bound_target_gone: None,
@@ -815,6 +829,21 @@ impl BrowserManager {
         Self::connect_cdp(&ws_url).await
     }
 
+    /// Check that target events belong to the selected profile context.
+    pub(crate) fn should_track_context_target(&self, target: &TargetInfo) -> bool {
+        self.browser_context_id
+            .as_ref()
+            .is_none_or(|id| target.browser_context_id.as_ref() == Some(id))
+    }
+
+    fn create_target_params(&self, url: &str) -> Value {
+        let mut params = json!({ "url": url });
+        if let Some(context_id) = &self.browser_context_id {
+            params["browserContextId"] = json!(context_id);
+        }
+        params
+    }
+
     async fn discover_and_attach_targets(&mut self) -> Result<(), String> {
         self.client
             .send_command_typed::<_, Value>(
@@ -832,7 +861,9 @@ impl BrowserManager {
         let page_targets: Vec<TargetInfo> = result
             .target_infos
             .into_iter()
-            .filter(should_track_target)
+            .filter(|target| {
+                should_track_target(target) && self.should_track_context_target(target)
+            })
             .collect();
 
         if page_targets.is_empty() {
@@ -841,9 +872,7 @@ impl BrowserManager {
                 .client
                 .send_command_typed(
                     "Target.createTarget",
-                    &CreateTargetParams {
-                        url: "about:blank".to_string(),
-                    },
+                    &self.create_target_params("about:blank"),
                     None,
                 )
                 .await?;
@@ -1123,9 +1152,7 @@ impl BrowserManager {
             .client
             .send_command_typed(
                 "Target.createTarget",
-                &CreateTargetParams {
-                    url: "about:blank".to_string(),
-                },
+                &self.create_target_params("about:blank"),
                 None,
             )
             .await?;
@@ -1691,9 +1718,7 @@ impl BrowserManager {
             .client
             .send_command_typed(
                 "Target.createTarget",
-                &CreateTargetParams {
-                    url: "about:blank".to_string(),
-                },
+                &self.create_target_params("about:blank"),
                 None,
             )
             .await?;
@@ -1856,9 +1881,7 @@ impl BrowserManager {
             .client
             .send_command_typed(
                 "Target.createTarget",
-                &CreateTargetParams {
-                    url: target_url.to_string(),
-                },
+                &self.create_target_params(target_url),
                 None,
             )
             .await?;
@@ -2638,6 +2661,7 @@ async fn initialize_lightpanda_manager(
             visited_origins: HashSet::new(),
             next_tab_id: 1,
             direct_page: false,
+            browser_context_id: None,
             pin_tab: false,
             bound_target_id: None,
             bound_target_gone: None,
@@ -2748,6 +2772,7 @@ async fn initialize_obscura_manager(
             visited_origins: HashSet::new(),
             next_tab_id: 1,
             direct_page: false,
+            browser_context_id: None,
             pin_tab: false,
             bound_target_id: None,
             bound_target_gone: None,
@@ -3631,11 +3656,168 @@ mod tests {
             visited_origins: HashSet::new(),
             next_tab_id: 100,
             direct_page: false,
+            browser_context_id: None,
             pin_tab: false,
             bound_target_id: None,
             bound_target_gone: None,
             wedge_suspect: None,
             headless: true,
+        }
+    }
+
+    #[tokio::test]
+    async fn profile_context_filters_targets_and_scopes_new_tabs() {
+        let mut manager = test_manager(Vec::new()).await;
+        let target = TargetInfo {
+            target_id: "target".to_string(),
+            target_type: "page".to_string(),
+            title: String::new(),
+            url: "about:blank".to_string(),
+            attached: None,
+            browser_context_id: Some("other".to_string()),
+        };
+        assert!(manager.should_track_context_target(&target));
+        assert_eq!(
+            manager.create_target_params("about:blank"),
+            json!({"url": "about:blank"})
+        );
+        manager.browser_context_id = Some("profile-context".to_string());
+        assert!(!manager.should_track_context_target(&target));
+        let mut target = target;
+        target.browser_context_id = Some("profile-context".to_string());
+        assert!(manager.should_track_context_target(&target));
+        assert_eq!(
+            manager.create_target_params("https://example.com"),
+            json!({
+                "url": "https://example.com", "browserContextId": "profile-context"
+            })
+        );
+    }
+
+    /// Exercise actual CDP traffic rather than just the helper functions used
+    /// to construct target filters. The foreign target appears first so this
+    /// test fails if the manager accidentally attaches to another context.
+    async fn profile_context_server(
+        include_profile_target: bool,
+    ) -> (String, tokio::task::JoinHandle<(bool, Vec<Value>)>) {
+        use futures_util::{SinkExt, StreamExt};
+        use tokio_tungstenite::tungstenite::handshake::server::{Request, Response};
+        use tokio_tungstenite::tungstenite::Message;
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("ws://{}", listener.local_addr().unwrap());
+        let task = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let authorized = Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let received = authorized.clone();
+            let callback = move |request: &Request, response: Response| {
+                let matches = request
+                    .headers()
+                    .get("authorization")
+                    .and_then(|value| value.to_str().ok())
+                    == Some("Bearer fixture-token");
+                received.store(matches, std::sync::atomic::Ordering::SeqCst);
+                Ok(response)
+            };
+            let mut ws = tokio_tungstenite::accept_hdr_async(stream, callback)
+                .await
+                .unwrap();
+            let mut commands = Vec::new();
+            let mut created = 0;
+            while let Ok(Some(message)) =
+                tokio::time::timeout(Duration::from_secs(10), ws.next()).await
+            {
+                let Ok(Message::Text(text)) = message else {
+                    break;
+                };
+                let command: Value = serde_json::from_str(&text).unwrap();
+                let method = command["method"].as_str().unwrap();
+                let result = match method {
+                    "Target.getTargets" => {
+                        let mut targets = vec![json!({
+                            "targetId": "foreign", "type": "page", "url": "about:blank",
+                            "title": "foreign", "browserContextId": "another-context"
+                        })];
+                        if include_profile_target {
+                            targets.push(json!({
+                                "targetId": "owned", "type": "page", "url": "about:blank",
+                                "title": "owned", "browserContextId": "profile-context"
+                            }));
+                        }
+                        json!({"targetInfos": targets})
+                    }
+                    "Target.createTarget" => {
+                        created += 1;
+                        json!({"targetId": format!("created-{created}")})
+                    }
+                    "Target.attachToTarget" => json!({
+                        "sessionId": format!("session-{}", command["params"]["targetId"].as_str().unwrap())
+                    }),
+                    "Runtime.evaluate" => json!({"result": {"type": "number", "value": 1}}),
+                    _ => json!({}),
+                };
+                let response = json!({"id": command["id"], "result": result});
+                commands.push(command);
+                ws.send(Message::Text(response.to_string())).await.unwrap();
+            }
+            (
+                authorized.load(std::sync::atomic::Ordering::SeqCst),
+                commands,
+            )
+        });
+        (url, task)
+    }
+
+    #[tokio::test]
+    async fn profile_context_attach_and_new_tab_use_scoped_cdp_targets() {
+        for include_profile_target in [true, false] {
+            let (url, server) = profile_context_server(include_profile_target).await;
+            let mut manager = BrowserManager::connect_cdp_in_context(
+                &url,
+                Some(vec![(
+                    "Authorization".into(),
+                    "Bearer fixture-token".into(),
+                )]),
+                "profile-context".into(),
+            )
+            .await
+            .unwrap();
+            assert_eq!(manager.pages.len(), 1);
+            assert_eq!(
+                manager.pages[0].target_id,
+                if include_profile_target {
+                    "owned"
+                } else {
+                    "created-1"
+                },
+            );
+            let new_tab = manager
+                .tab_new(Some("https://example.com"), None)
+                .await
+                .unwrap();
+            assert_eq!(new_tab["total"], 2);
+            manager.close().await.unwrap();
+
+            let (authorized, commands) = server.await.unwrap();
+            assert!(authorized, "CDP handshake must receive the provider header");
+            let attached: Vec<&str> = commands
+                .iter()
+                .filter(|command| command["method"] == "Target.attachToTarget")
+                .filter_map(|command| command["params"]["targetId"].as_str())
+                .collect();
+            assert!(!attached.contains(&"foreign"));
+            let created: Vec<&Value> = commands
+                .iter()
+                .filter(|command| command["method"] == "Target.createTarget")
+                .collect();
+            assert_eq!(created.len(), if include_profile_target { 1 } else { 2 });
+            assert!(created
+                .iter()
+                .all(|command| command["params"]["browserContextId"] == "profile-context"));
+            assert_eq!(
+                created.last().unwrap()["params"]["url"],
+                "https://example.com"
+            );
         }
     }
 
@@ -3692,6 +3874,7 @@ mod tests {
             visited_origins: HashSet::new(),
             next_tab_id: 1,
             direct_page: false,
+            browser_context_id: None,
             pin_tab: false,
             bound_target_id: None,
             bound_target_gone: None,
@@ -3791,14 +3974,14 @@ mod tests {
         existing: bool,
     ) {
         let (url, server) = initialization_server(fail_method, existing, 2, false).await;
-        let error = BrowserManager::connect_cdp_inner(&url, direct, None)
+        let error = BrowserManager::connect_cdp_inner(&url, direct, None, None)
             .await
             .err()
             .expect("initialization should fail");
         assert!(error.contains("injected initialization failure"), "{error}");
         let mut manager = tokio::time::timeout(
             Duration::from_secs(4),
-            BrowserManager::connect_cdp_inner(&url, direct, None),
+            BrowserManager::connect_cdp_inner(&url, direct, None, None),
         )
         .await
         .expect("retry should succeed after cleanup")

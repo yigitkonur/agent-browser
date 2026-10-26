@@ -9,7 +9,11 @@ patchedDependencies:
 
 importers:
 
-  .: {}
+  .:
+    optionalDependencies:
+      playwright:
+        specifier: 1.64.0-alpha-1790635538000
+        version: 1.64.0-alpha-1790635538000
 
   docs:
     dependencies:
@@ -154,6 +158,12 @@ importers:
       typescript:
         specifier: 5.9.3
         version: 5.9.3
+
+  packages/cloudflare-profile:
+    dependencies:
+      playwright:
+        specifier: 1.64.0-alpha-1790635538000
+        version: 1.64.0-alpha-1790635538000
 
   packages/dashboard:
     dependencies:
@@ -6327,6 +6337,16 @@ packages:
 
   player.style@0.3.4:
     resolution: {integrity: sha512-5O9bkbq0APQIkhptyZwp0gUgheCeImGPFo4hvPF2M5xBmgsUYzsUPHCfMye2xyeRE1zvQBKtziaC3jPgnHE1tw==}
+
+  playwright-core@1.64.0-alpha-1790635538000:
+    resolution: {integrity: sha512-pNwaXirhXMRLaRQs4NQ18EpTdtDoFwyPH9FOaaDC7YXG4hpwE2xmwCic/1srbuExVQC7zT9LJSJpDBAru+Vo9A==}
+    engines: {node: '>=20'}
+    hasBin: true
+
+  playwright@1.64.0-alpha-1790635538000:
+    resolution: {integrity: sha512-/5XDUMxpOd/9AojJtWDFIRV3EJZNQ0AwvK69wgt3CPzy8wTgiBG9pX45VfxtqtvIRGwfWzMhrvawNKreG69Snw==}
+    engines: {node: '>=20'}
+    hasBin: true
 
   points-on-curve@0.2.0:
     resolution: {integrity: sha512-0mYKnYYe9ZcqMCWhUjItv/oHjvgEsfKvnUTg8sAtnHr3GVy7rGkXCb6d5cSyqrWqL4k81b9CPg3urd+T7aop3A==}
@@ -14029,6 +14049,12 @@ snapshots:
       media-chrome: 4.19.2(react@19.2.3)
     transitivePeerDependencies:
       - react
+
+  playwright-core@1.64.0-alpha-1790635538000: {}
+
+  playwright@1.64.0-alpha-1790635538000:
+    dependencies:
+      playwright-core: 1.64.0-alpha-1790635538000
 
   points-on-curve@0.2.0: {}
 

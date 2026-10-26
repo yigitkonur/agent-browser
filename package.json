@@ -14,7 +14,10 @@
     "skill-data",
     "skills",
     "cli/src/native/a11y/LICENSE-axe-core.txt",
-    "cli/src/native/a11y/LICENSE-axe-core-THIRD-PARTY.txt"
+    "cli/src/native/a11y/LICENSE-axe-core-THIRD-PARTY.txt",
+    "packages/cloudflare-profile/companion.mjs",
+    "packages/cloudflare-profile/profiles.mjs",
+    "packages/cloudflare-profile/LICENSE-plugin-cf-browser.txt"
   ],
   "bin": {
     "agent-browser": "./bin/agent-browser.js"
@@ -51,5 +54,8 @@
     "url": "https://github.com/vercel-labs/agent-browser/issues"
   },
   "homepage": "https://agent-browser.dev",
-  "devDependencies": {}
+  "devDependencies": {},
+  "optionalDependencies": {
+    "playwright": "1.64.0-alpha-1790635538000"
+  }
 }

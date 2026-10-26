@@ -1033,6 +1033,9 @@ mod tests {
     fn chat_allows_every_browser_command() {
         const MANAGEMENT: &[&str] = &[
             "chat",
+            // Cloudflare lifecycle and handoff are available through the CLI
+            // and MCP, but must not be relayed by dashboard chat.
+            "cloudflare",
             "dashboard",
             "doctor",
             "install",

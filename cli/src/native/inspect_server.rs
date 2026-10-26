@@ -5,7 +5,7 @@ use std::sync::Arc;
 use futures_util::{SinkExt, StreamExt};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpListener;
-use tokio::sync::Mutex;
+use tokio::sync::{watch, Mutex};
 use tokio_tungstenite::tungstenite::handshake::server::{ErrorResponse, Request, Response};
 use tokio_tungstenite::tungstenite::http::StatusCode;
 use tokio_tungstenite::tungstenite::Message;
@@ -25,6 +25,7 @@ static ATTACH_ID: AtomicI64 = AtomicI64::new(-1000);
 pub struct InspectServer {
     port: u16,
     _handle: tokio::task::JoinHandle<()>,
+    shutdown_tx: watch::Sender<bool>,
 }
 
 impl InspectServer {
@@ -48,17 +49,20 @@ impl InspectServer {
 
         let proxy = Arc::new(proxy_handle);
 
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
         let handle = tokio::spawn(accept_loop(
             listener,
             proxy,
             target_id,
             chrome_host_port,
             port,
+            shutdown_rx,
         ));
 
         Ok(Self {
             port,
             _handle: handle,
+            shutdown_tx,
         })
     }
 
@@ -66,8 +70,9 @@ impl InspectServer {
         self.port
     }
 
-    pub fn shutdown(self) {
-        self._handle.abort();
+    pub async fn shutdown(self) {
+        let _ = self.shutdown_tx.send(true);
+        let _ = self._handle.await;
     }
 }
 
@@ -77,23 +82,29 @@ async fn accept_loop(
     target_id: String,
     chrome_host_port: String,
     proxy_port: u16,
+    mut shutdown_rx: watch::Receiver<bool>,
 ) {
+    let mut connections = tokio::task::JoinSet::new();
     loop {
-        let (stream, _) = match listener.accept().await {
-            Ok(s) => s,
-            Err(_) => continue,
-        };
-
-        let proxy = proxy.clone();
-        let tid = target_id.clone();
-        let chp = chrome_host_port.clone();
-
-        tokio::spawn(async move {
-            if let Err(e) = handle_connection(stream, proxy, tid, chp, proxy_port).await {
-                let _ = writeln!(std::io::stderr(), "[inspect] connection error: {}", e);
+        tokio::select! {
+            changed = shutdown_rx.changed() => {
+                if changed.is_err() || *shutdown_rx.borrow() { break; }
             }
-        });
+            Some(_) = connections.join_next(), if !connections.is_empty() => {}
+            accepted = listener.accept() => {
+                let Ok((stream, _)) = accepted else { break };
+                let proxy = proxy.clone();
+                let tid = target_id.clone();
+                let chp = chrome_host_port.clone();
+                connections.spawn(async move {
+                    if let Err(e) = handle_connection(stream, proxy, tid, chp, proxy_port).await {
+                        let _ = writeln!(std::io::stderr(), "[inspect] connection error: {}", e);
+                    }
+                });
+            }
+        }
     }
+    connections.shutdown().await;
 }
 
 async fn handle_connection(
@@ -244,7 +255,7 @@ async fn handle_ws_proxy(
     let session_id_clone = session_id.clone();
 
     // Chrome -> DevTools: forward messages matching our session, strip sessionId
-    let mut chrome_to_devtools = tokio::spawn(async move {
+    let chrome_to_devtools = async move {
         loop {
             let raw_msg = match raw_rx.recv().await {
                 Ok(msg) => msg,
@@ -270,12 +281,12 @@ async fn handle_ws_proxy(
                 break;
             }
         }
-    });
+    };
 
     // DevTools -> Chrome: inject sessionId and forward
     let proxy_for_send = proxy.clone();
     let session_id_for_send = session_id.clone();
-    let mut devtools_to_chrome = tokio::spawn(async move {
+    let devtools_to_chrome = async move {
         while let Some(Ok(msg)) = ws_rx.next().await {
             let text = match msg {
                 Message::Text(t) => t,
@@ -288,15 +299,11 @@ async fn handle_ws_proxy(
                 break;
             }
         }
-    });
+    };
 
     tokio::select! {
-        _ = &mut chrome_to_devtools => {
-            devtools_to_chrome.abort();
-        },
-        _ = &mut devtools_to_chrome => {
-            chrome_to_devtools.abort();
-        },
+        _ = chrome_to_devtools => {},
+        _ = devtools_to_chrome => {},
     }
 
     // Clean up the CDP session so Chrome doesn't leak attached targets
@@ -346,6 +353,59 @@ fn strip_session_id(json: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn shutdown_terminates_existing_inspect_websocket() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (command_tx, mut command_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mock = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut ws = tokio_tungstenite::accept_async(stream).await.unwrap();
+            while let Some(Ok(Message::Text(text))) = ws.next().await {
+                let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+                if value["method"] == "Target.attachToTarget" {
+                    ws.send(Message::Text(serde_json::json!({"id": value["id"], "result":{"sessionId":"inspect-test"}}).to_string())).await.unwrap();
+                } else {
+                    let _ = command_tx.send(value);
+                }
+            }
+        });
+        let client = super::super::cdp::client::CdpClient::connect(&format!("ws://{addr}"))
+            .await
+            .unwrap();
+        let server = InspectServer::start(
+            client.inspect_handle(),
+            "page-test".into(),
+            "127.0.0.1:9222".into(),
+        )
+        .await
+        .unwrap();
+        let (mut inspector, _) =
+            tokio_tungstenite::connect_async(format!("ws://127.0.0.1:{}/ws", server.port()))
+                .await
+                .unwrap();
+        inspector
+            .send(Message::Text(
+                r#"{"id":1,"method":"Runtime.evaluate"}"#.into(),
+            ))
+            .await
+            .unwrap();
+        let forwarded = tokio::time::timeout(std::time::Duration::from_secs(5), command_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(forwarded["method"], "Runtime.evaluate");
+        server.shutdown().await;
+        let closed = tokio::time::timeout(std::time::Duration::from_secs(5), inspector.next())
+            .await
+            .unwrap();
+        assert!(matches!(
+            closed,
+            None | Some(Err(_)) | Some(Ok(Message::Close(_)))
+        ));
+        mock.abort();
+    }
 
     #[test]
     fn test_inject_session_id() {

@@ -1116,7 +1116,10 @@ fn is_read_only(cmd: &Value) -> bool {
 }
 
 pub fn send_command(cmd: Value, session: &str) -> Result<Response, String> {
-    send_with_retry(is_read_only(&cmd), || send_command_once(&cmd, session))
+    // Even a read-like action can implicitly create a billable Cloudflare
+    // session after a disconnected browser. Do not replay an unknown outcome.
+    let replay_safe = is_read_only(&cmd) && !is_cloudflare_session(&cmd, session);
+    send_with_retry(replay_safe, || send_command_once(&cmd, session))
 }
 
 /// Retry transient errors (EAGAIN/EWOULDBLOCK/connection issues). Once a
@@ -1227,13 +1230,46 @@ pub(crate) fn read_timeout_for(cmd: &Value) -> Duration {
     Duration::from_millis(op_ms.saturating_add(10_000).max(30_000))
 }
 
+/// Cloudflare provider startup and rollback involve several bounded remote
+/// operations. Allow their full deadline before reporting outcome_unknown.
+/// Session metadata covers implicit relaunches after a previous provider launch.
+fn is_cloudflare_session(cmd: &Value, session: &str) -> bool {
+    let action = cmd.get("action").and_then(Value::as_str).unwrap_or("");
+    if action == "read" {
+        return false;
+    }
+    let provider = cmd.get("provider").and_then(Value::as_str);
+    if let Some(provider) = provider {
+        provider.eq_ignore_ascii_case("cloudflare")
+    } else if action.starts_with("cloudflare_") {
+        true
+    } else {
+        match fs::read_to_string(crate::session_files::SessionFile::Provider.path(session)) {
+            Ok(provider) => provider.trim().eq_ignore_ascii_case("cloudflare"),
+            Err(_) => env::var("AGENT_BROWSER_PROVIDER")
+                .is_ok_and(|p| p.eq_ignore_ascii_case("cloudflare")),
+        }
+    }
+}
+
+fn read_timeout_for_session(cmd: &Value, session: &str) -> Duration {
+    let base = read_timeout_for(cmd);
+    if is_cloudflare_session(cmd, session) {
+        base.saturating_add(Duration::from_secs(210))
+    } else {
+        base
+    }
+}
+
 fn send_command_once(cmd: &Value, session: &str) -> Result<Response, SendError> {
     let mut json_str = serde_json::to_string(cmd).map_err(|e| SendError::NotSent(e.to_string()))?;
     json_str.push('\n');
 
     let stream = connect(session).map_err(SendError::NotSent)?;
 
-    stream.set_read_timeout(Some(read_timeout_for(cmd))).ok();
+    stream
+        .set_read_timeout(Some(read_timeout_for_session(cmd, session)))
+        .ok();
     stream.set_write_timeout(Some(Duration::from_secs(5))).ok();
 
     exchange(stream, json_str.as_bytes())
@@ -1276,6 +1312,39 @@ fn exchange<S: Read + Write>(mut stream: S, request: &[u8]) -> Result<Response, 
 mod tests {
     use super::*;
     use crate::test_utils::EnvGuard;
+
+    #[test]
+    fn cloudflare_ipc_budget_covers_launch_and_preserves_other_providers() {
+        let guard = EnvGuard::new(&["AGENT_BROWSER_PROVIDER", "AGENT_BROWSER_SOCKET_DIR"]);
+        guard.remove("AGENT_BROWSER_PROVIDER");
+        let dir = tempfile::tempdir().unwrap();
+        guard.set("AGENT_BROWSER_SOCKET_DIR", dir.path().to_str().unwrap());
+        assert_eq!(
+            read_timeout_for_session(&json!({"action":"launch", "provider":"cloudflare"}), "s"),
+            Duration::from_secs(240)
+        );
+        assert_eq!(
+            read_timeout_for_session(&json!({"action":"cloudflare_cleanup"}), "s"),
+            Duration::from_secs(240)
+        );
+        assert_eq!(
+            read_timeout_for_session(&json!({"action":"launch", "provider":"browserbase"}), "s"),
+            Duration::from_secs(30)
+        );
+        fs::write(SessionFile::Provider.path("s"), "cloudflare").unwrap();
+        assert_eq!(
+            read_timeout_for_session(&json!({"action":"navigate"}), "s"),
+            Duration::from_secs(240)
+        );
+        assert_eq!(
+            read_timeout_for_session(&json!({"action":"read"}), "s"),
+            Duration::from_secs(30)
+        );
+        assert_eq!(
+            read_timeout_for_session(&json!({"action":"launch", "provider":"browserbase"}), "s"),
+            Duration::from_secs(30)
+        );
+    }
 
     #[cfg(unix)]
     #[test]

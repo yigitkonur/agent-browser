@@ -243,11 +243,19 @@ fn batch_send_error_preserves_identity_without_a_daemon_response() {
         let mut requests = 0;
         while requests < 2 {
             let (mut stream, _) = listener.accept().unwrap();
-            stream
+            // A daemon liveness probe can connect and close before the fake
+            // server configures the socket. macOS reports EINVAL for that
+            // already-disconnected peer; wait for the real request instead.
+            if stream
                 .set_read_timeout(Some(Duration::from_secs(2)))
-                .unwrap();
+                .is_err()
+            {
+                continue;
+            }
             let mut line = String::new();
-            BufReader::new(&stream).read_line(&mut line).unwrap();
+            if BufReader::new(&stream).read_line(&mut line).is_err() {
+                continue;
+            }
             if line.is_empty() {
                 continue;
             }

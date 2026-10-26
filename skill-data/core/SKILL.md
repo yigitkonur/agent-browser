@@ -584,3 +584,8 @@ That pulls in:
 - `references/proxy-support.md`: proxy configuration and CA certificates for HTTPS interception proxies
 - `references/webgpu.md` — screenshots/video of WebGPU pages (three.js, Babylon.js), Linux/CI setup
 - `templates/*` — starter shell scripts for auth, capture, form automation
+
+
+## Cloudflare Browser Run
+
+Select `-p cloudflare` with `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN` set. Shared profile writes are disabled until live compatibility is verified; set `CLOUDFLARE_PROFILE_MODE=none` for an isolated session or `read` to load an existing named profile without saving. Use `agent-browser cloudflare live-view`, `handoff <instructions>`, and `wait` for human control. Live View URLs are sensitive. Close the browser when finished; `cloudflare sessions` and `cloudflare cleanup` inspect or retry owned-session cleanup.

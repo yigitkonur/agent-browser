@@ -199,6 +199,19 @@ fn build_provider_launch_command(provider: &str, flags: &Flags) -> serde_json::V
     launch_cmd
 }
 
+/// Cloudflare management and close commands must not allocate a browser just
+/// because a default provider was configured in the environment.
+fn should_launch_provider_for_command(provider: &str, cmd: &serde_json::Value) -> bool {
+    if !provider.eq_ignore_ascii_case("cloudflare") {
+        return true;
+    }
+    let action = cmd
+        .get("action")
+        .and_then(|value| value.as_str())
+        .unwrap_or("");
+    !matches!(action, "close" | "read") && !action.starts_with("cloudflare_")
+}
+
 fn restore_key_from_flags(flags: &Flags) -> Option<&str> {
     flags.restore.as_deref().or(flags.session_name.as_deref())
 }
@@ -1992,7 +2005,11 @@ fn main() {
     }
 
     // Launch with cloud provider if -p flag is set.
-    if let Some(ref provider) = flags.provider {
+    if let Some(provider) = flags
+        .provider
+        .as_ref()
+        .filter(|provider| should_launch_provider_for_command(provider, &cmd))
+    {
         let launch_cmd = build_provider_launch_command(provider, &flags);
 
         let err = match send_command(launch_cmd, &flags.session) {
@@ -2670,6 +2687,34 @@ mod tests {
 
         assert_eq!(cmd["clearCaCert"], true);
         assert!(cmd.get("caCert").is_none());
+    }
+
+    #[test]
+    fn cloudflare_management_does_not_create_a_browser() {
+        for action in [
+            "close",
+            "read",
+            "cloudflare_sessions",
+            "cloudflare_cleanup",
+            "cloudflare_live_view",
+            "cloudflare_handoff",
+            "cloudflare_wait",
+            "cloudflare_profile_clone",
+            "cloudflare_profile_restore",
+        ] {
+            assert!(
+                !should_launch_provider_for_command("cloudflare", &json!({"action":action})),
+                "{action}"
+            );
+        }
+        assert!(should_launch_provider_for_command(
+            "cloudflare",
+            &json!({"action":"navigate"})
+        ));
+        assert!(should_launch_provider_for_command(
+            "browserbase",
+            &json!({"action":"close"})
+        ));
     }
 
     #[test]

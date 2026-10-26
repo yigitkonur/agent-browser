@@ -7,6 +7,13 @@ use serde_json::{json, Value};
 use std::env;
 use std::time::Duration;
 
+#[path = "cloudflare_provider.rs"]
+mod cloudflare_provider;
+pub(crate) use cloudflare_provider::{
+    idle_and_max as cloudflare_idle_and_max, retry_owned as retry_cloudflare_owned,
+    status_owned as cloudflare_owned_status,
+};
+
 const BROWSER_USE_API_BASE: &str = "https://api.browser-use.com/api/v4";
 const BROWSER_USE_CREATE_DEADLINE: Duration = Duration::from_secs(10);
 const BROWSER_USE_STOP_DEADLINE: Duration = Duration::from_secs(4);
@@ -18,13 +25,29 @@ pub struct ProviderSession {
     pub session_id: String,
 }
 
-#[derive(Debug)]
 pub struct ProviderConnection {
     pub ws_url: String,
+    /// Authentication for the CDP handshake, never page request headers.
+    pub ws_headers: Option<Vec<(String, String)>>,
     pub session: Option<ProviderSession>,
     /// If true, the WebSocket IS the page session (no Target.* commands).
     pub direct_page: bool,
     pub metadata: Option<Value>,
+}
+
+impl std::fmt::Debug for ProviderConnection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ProviderConnection")
+            .field("ws_url", &"<redacted>")
+            .field(
+                "ws_headers",
+                &self.ws_headers.as_ref().map(|_| "<redacted>"),
+            )
+            .field("session", &self.session)
+            .field("direct_page", &self.direct_page)
+            .field("metadata", &self.metadata)
+            .finish()
+    }
 }
 
 /// Connects to the specified browser provider and returns a CDP WebSocket URL
@@ -58,6 +81,7 @@ pub async fn connect_provider_with_plugins_and_options(
             let (url, session) = connect_browserbase().await?;
             Ok(ProviderConnection {
                 ws_url: url,
+                ws_headers: None,
                 session,
                 direct_page: false,
                 metadata: None,
@@ -67,6 +91,7 @@ pub async fn connect_provider_with_plugins_and_options(
             let (url, session) = connect_browserless().await?;
             Ok(ProviderConnection {
                 ws_url: url,
+                ws_headers: None,
                 session,
                 direct_page: false,
                 metadata: None,
@@ -76,6 +101,7 @@ pub async fn connect_provider_with_plugins_and_options(
             let (url, session) = connect_browser_use().await?;
             Ok(ProviderConnection {
                 ws_url: url,
+                ws_headers: None,
                 session,
                 direct_page: false,
                 metadata: None,
@@ -85,6 +111,7 @@ pub async fn connect_provider_with_plugins_and_options(
             let (url, session) = connect_kernel().await?;
             Ok(ProviderConnection {
                 ws_url: url,
+                ws_headers: None,
                 session,
                 direct_page: false,
                 metadata: None,
@@ -94,11 +121,13 @@ pub async fn connect_provider_with_plugins_and_options(
             let (url, session) = connect_agentcore().await?;
             Ok(ProviderConnection {
                 ws_url: url,
+                ws_headers: take_agentcore_ws_headers(),
                 session,
                 direct_page: false,
                 metadata: None,
             })
         }
+        "cloudflare" => cloudflare_provider::connect().await,
         _ => {
             connect_plugin_provider_with_plugins_and_options(provider_name, plugins, launch_options)
                 .await
@@ -173,6 +202,7 @@ pub async fn close_provider_session_with_plugins(
             // AgentCore session cleanup is handled via signed DELETE request
             let _ = close_agentcore_session(&session.session_id).await;
         }
+        "cloudflare" => return cloudflare_provider::close(&session.session_id).await,
         _ => {}
     }
     Ok(())
@@ -192,7 +222,7 @@ pub async fn connect_plugin_provider_with_plugins_and_options(
 ) -> Result<ProviderConnection, String> {
     if crate::plugins::find_plugin(plugins, provider_name).is_none() {
         return Err(format!(
-            "Unknown provider '{}'. Supported: browserbase, browserless, browser-use, kernel, agentcore, or a configured plugin with browser.provider",
+            "Unknown provider '{}'. Supported: browserbase, browserless, browser-use, kernel, agentcore, cloudflare, or a configured plugin with browser.provider",
             provider_name
         ));
     }
@@ -235,6 +265,7 @@ pub async fn connect_plugin_provider_with_plugins_and_options(
     });
     Ok(ProviderConnection {
         ws_url: browser.cdp_url,
+        ws_headers: None,
         session,
         direct_page: browser.direct_page,
         metadata: browser.metadata,

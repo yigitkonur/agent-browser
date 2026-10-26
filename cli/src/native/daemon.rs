@@ -305,7 +305,9 @@ async fn run_socket_server(
                     );
                 }
                 let _ = auto_save_restore_state(&mut s).await;
-                let _ = close_all_browser_backends(&mut s).await;
+                if let Err(error) = close_all_browser_backends(&mut s).await {
+                    let _ = writeln!(std::io::stderr(), "Browser cleanup failed: {error}");
+                }
                 break;
             }
             _ = idle_activity.notified(), if idle_timeout_ms.is_some() => {
@@ -328,7 +330,9 @@ async fn run_socket_server(
                     None => state.clone().lock_owned().await,
                 };
                 let _ = auto_save_restore_state(&mut s).await;
-                let _ = close_all_browser_backends(&mut s).await;
+                if let Err(error) = close_all_browser_backends(&mut s).await {
+                    let _ = writeln!(std::io::stderr(), "Browser cleanup failed: {error}");
+                }
                 break;
             }
         }
@@ -450,7 +454,9 @@ async fn run_socket_server(
                     );
                 }
                 let _ = auto_save_restore_state(&mut s).await;
-                let _ = close_all_browser_backends(&mut s).await;
+                if let Err(error) = close_all_browser_backends(&mut s).await {
+                    let _ = writeln!(std::io::stderr(), "Browser cleanup failed: {error}");
+                }
                 break;
             }
             _ = idle_activity.notified(), if idle_timeout_ms.is_some() => {
@@ -470,7 +476,9 @@ async fn run_socket_server(
                     None => state.clone().lock_owned().await,
                 };
                 let _ = auto_save_restore_state(&mut s).await;
-                let _ = close_all_browser_backends(&mut s).await;
+                if let Err(error) = close_all_browser_backends(&mut s).await {
+                    let _ = writeln!(std::io::stderr(), "Browser cleanup failed: {error}");
+                }
                 break;
             }
         }
@@ -498,6 +506,15 @@ fn spawn_background_tick_if_idle(
         return false;
     };
     tokio::spawn(async move {
+        if state.cloudflare_lifecycle_expired() {
+            if let Err(error) = close_current_browser(&mut state).await {
+                let _ = writeln!(
+                    std::io::stderr(),
+                    "Cloudflare session cleanup failed: {error}"
+                );
+            }
+            return;
+        }
         let process_exited = state
             .browser
             .as_mut()

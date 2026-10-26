@@ -1989,6 +1989,21 @@ If a stop keeps returning 404, verify the browser status in Browser Use Cloud. A
 
 Get your API key from the [Browser Use Cloud Dashboard](https://cloud.browser-use.com/settings?tab=api-keys).
 
+### Cloudflare Browser Run
+
+This fork supports Cloudflare Browser Run as a managed CDP provider. Set `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN`, then select the `cloudflare` provider. The token needs Browser Rendering Edit permission.
+
+```bash
+export CLOUDFLARE_ACCOUNT_ID="your-account-id"
+export CLOUDFLARE_API_TOKEN="your-api-token"
+export CLOUDFLARE_PROFILE_MODE=none
+agent-browser -p cloudflare open https://example.com
+agent-browser cloudflare live-view
+agent-browser close
+```
+
+The default shared profile write mode is deliberately disabled until a live Cloudflare compatibility test passes. Use `CLOUDFLARE_PROFILE_MODE=none` for an empty isolated context, or `read` with `CLOUDFLARE_PROFILE=main` to load an existing Cloudflare plugin profile without writing it. Node.js and the packaged Playwright dependency are required. See the [Cloudflare provider guide](docs/content/docs/providers/cloudflare.mdx) for lifecycle, handoff, and recovery details.
+
 ### Kernel
 
 [Kernel](https://www.kernel.sh) provides cloud browser infrastructure for AI agents with features like stealth mode and persistent profiles.
