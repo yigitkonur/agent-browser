@@ -10,6 +10,7 @@ use std::time::Duration;
 #[path = "cloudflare_provider.rs"]
 mod cloudflare_provider;
 pub(crate) use cloudflare_provider::{
+    clear_profile_unknown as cloudflare_clear_profile_unknown,
     idle_and_max as cloudflare_idle_and_max, retry_owned as retry_cloudflare_owned,
     status_owned as cloudflare_owned_status,
 };

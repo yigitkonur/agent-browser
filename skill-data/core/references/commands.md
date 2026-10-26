@@ -578,7 +578,8 @@ Browser Use Cloud lifecycle: setup is bounded to 18s plus up to 4s for timeout c
 ## Cloudflare Browser Run
 
 ```bash
-CLOUDFLARE_PROFILE_MODE=none agent-browser -p cloudflare open https://example.com
+export AGENT_BROWSER_PROVIDER=cloudflare
+agent-browser open https://example.com
 agent-browser cloudflare live-view
 agent-browser cloudflare handoff "Please sign in"
 agent-browser cloudflare wait
@@ -589,4 +590,6 @@ agent-browser cloudflare profile restore main
 agent-browser close
 ```
 
-Set the Cloudflare account and API token in `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN`. Shared profile writes remain disabled until the live compatibility gate passes; `read` imports a profile without write-back, and `none` starts empty. The provider releases owned sessions on close and retains a recovery record when remote closure is unconfirmed.
+Set the Cloudflare account and API token in `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN`. The existing `main` profile is loaded read-only by default; reuse the same session while it is open. New logins and other changes are not saved after close, timeout, or disconnect. Missing `main` fails instead of opening an empty browser; explicitly set `CLOUDFLARE_PROFILE_MODE=none` for an empty browser. Shared profile writes remain disabled until live compatibility and locking are verified. The provider releases owned sessions on close and retains a recovery record when remote closure is unconfirmed.
+
+Use the same `--session` or `AGENT_BROWSER_SESSION` in every process to reuse the existing browser. Another fork-owned session cannot open the same profile concurrently. After an unknown create outcome, inspect and close any orphan in the Cloudflare dashboard before using `agent-browser cloudflare profile clear-unknown --confirm`.

@@ -851,7 +851,48 @@ pub(crate) fn prevent_stdio_handle_inheritance() {
     }
 }
 
+/// Serialize daemon startup across CLI processes. Without this lock two
+/// clients can both remove the other's socket while starting the same session.
+#[cfg(unix)]
+fn acquire_daemon_start_lock(session: &str) -> Result<fs::File, String> {
+    use std::os::fd::AsRawFd;
+    use std::os::unix::fs::OpenOptionsExt;
+    let dir = get_socket_dir();
+    fs::create_dir_all(&dir).map_err(|_| "Unable to create daemon socket directory")?;
+    use sha2::{Digest, Sha256};
+    let path = dir.join(format!(
+        ".startup-{}",
+        hex::encode(Sha256::digest(session.as_bytes()))
+    ));
+    let file = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(path)
+        .map_err(|_| "Unable to open daemon startup lock")?;
+    let deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
+            return Ok(file);
+        }
+        let error = std::io::Error::last_os_error();
+        if error.kind() != std::io::ErrorKind::WouldBlock
+            && error.kind() != std::io::ErrorKind::Interrupted
+        {
+            return Err("Unable to acquire daemon startup lock".into());
+        }
+        if Instant::now() >= deadline {
+            return Err("Timed out waiting for another client to start the daemon".into());
+        }
+        thread::sleep(Duration::from_millis(25));
+    }
+}
+
 pub fn ensure_daemon(session: &str, opts: &DaemonOptions) -> Result<DaemonResult, String> {
+    #[cfg(unix)]
+    let _startup_lock = acquire_daemon_start_lock(session)?;
     let mut restarted = false;
 
     // Socket connectivity is the sole liveness check — no PID check — so
@@ -1115,10 +1156,18 @@ fn is_read_only(cmd: &Value) -> bool {
         .is_some_and(|action| READ_ONLY_ACTIONS.contains(&action))
 }
 
-pub fn send_command(cmd: Value, session: &str) -> Result<Response, String> {
+pub fn send_command(mut cmd: Value, session: &str) -> Result<Response, String> {
     // Even a read-like action can implicitly create a billable Cloudflare
     // session after a disconnected browser. Do not replay an unknown outcome.
-    let replay_safe = is_read_only(&cmd) && !is_cloudflare_session(&cmd, session);
+    let cloudflare = is_cloudflare_session(&cmd, session);
+    let cloudflare_settings = crate::native::cloudflare_identity::client_settings();
+    if cloudflare_settings
+        .as_object()
+        .is_some_and(|settings| !settings.is_empty())
+    {
+        cmd["cloudflareSettings"] = cloudflare_settings;
+    }
+    let replay_safe = is_read_only(&cmd) && !cloudflare;
     send_with_retry(replay_safe, || send_command_once(&cmd, session))
 }
 
@@ -1312,6 +1361,25 @@ fn exchange<S: Read + Write>(mut stream: S, request: &[u8]) -> Result<Response, 
 mod tests {
     use super::*;
     use crate::test_utils::EnvGuard;
+
+    #[cfg(unix)]
+    #[test]
+    fn concurrent_daemon_startups_for_same_session_are_serialized() {
+        let guard = EnvGuard::new(&["AGENT_BROWSER_SOCKET_DIR", "AGENT_BROWSER_NAMESPACE"]);
+        let dir = tempfile::tempdir().unwrap();
+        guard.set("AGENT_BROWSER_SOCKET_DIR", dir.path().to_str().unwrap());
+        guard.remove("AGENT_BROWSER_NAMESPACE");
+        let first = acquire_daemon_start_lock("shared").unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let waiter = std::thread::spawn(move || {
+            let _second = acquire_daemon_start_lock("shared").unwrap();
+            tx.send(()).unwrap();
+        });
+        assert!(rx.recv_timeout(Duration::from_millis(100)).is_err());
+        drop(first);
+        rx.recv_timeout(Duration::from_secs(2)).unwrap();
+        waiter.join().unwrap();
+    }
 
     #[test]
     fn cloudflare_ipc_budget_covers_launch_and_preserves_other_providers() {

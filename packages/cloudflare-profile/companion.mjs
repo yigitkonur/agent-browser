@@ -50,7 +50,7 @@ export class Companion {
     const { sessionId, token } = args;
     if (typeof sessionId !== 'string' || !sessionId || typeof token !== 'string' || !token || /[\r\n]/.test(token)) throw new ProfileError('INVALID_CREDENTIALS', 'Missing or invalid browser credentials.');
     const endpoint = assertAllowedUrl(args.wsUrl, sessionId);
-    const mode = args.mode ?? 'write';
+    const mode = args.mode ?? 'read';
     if (!['write', 'read', 'none'].includes(mode)) throw new ProfileError('BAD_PROFILE_MODE', 'Profile mode must be write, read, or none.');
     // Native caller can set this only after its end-to-end compatibility gate.
     this.gate = args.compatibilityVerified === true;

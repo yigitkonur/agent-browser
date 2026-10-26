@@ -557,6 +557,7 @@ fn print_primary_response(resp: &Response, action: Option<&str>, opts: &OutputOp
                     | "cloudflare_cleanup"
                     | "cloudflare_profile_clone"
                     | "cloudflare_profile_restore"
+                    | "cloudflare_profile_clear_unknown"
             )
         ) {
             println!("{}", serde_json::to_string_pretty(data).unwrap_or_default());
@@ -3624,9 +3625,11 @@ Usage:
   agent-browser cloudflare cleanup
   agent-browser cloudflare profile clone <from> <to>
   agent-browser cloudflare profile restore <name>
+  agent-browser cloudflare profile clear-unknown --confirm
 
 Live View, handoff, and wait require an active Cloudflare provider session.
 Profile restore is disabled until crash-safe recovery is verified.
+Clear an unknown creation only after checking that no browser remains open in Cloudflare.
 Live View URLs are sensitive.
 While a handoff is active, browser commands are blocked. Repeat wait while
 its status is active. A successful handoff remains blocked until wait has
@@ -3911,6 +3914,7 @@ Core Commands:
   cloudflare cleanup         Retry cleanup for abandoned Cloudflare sessions
   cloudflare profile clone   Clone a saved Cloudflare profile
   cloudflare profile restore Restore a previous profile (currently disabled)
+  cloudflare profile clear-unknown --confirm  Clear a checked unknown session outcome
   open <url>                 Navigate to URL
   read [url]                 Fetch agent-readable text
   click <sel>                Click element (or @ref)
@@ -4244,7 +4248,7 @@ Environment:
   CLOUDFLARE_ACCOUNT_ID          Cloudflare account ID
   CLOUDFLARE_API_TOKEN           Cloudflare Browser Rendering Edit token
   CLOUDFLARE_PROFILE             Cloudflare plugin profile name (default: main)
-  CLOUDFLARE_PROFILE_MODE        read or none; write is gated pending live verification
+  CLOUDFLARE_PROFILE_MODE        read (default) or none; write is gated pending verification
   CLOUDFLARE_IDLE_TIMEOUT_MS     Cloudflare session idle timeout (default: 300000)
   CLOUDFLARE_MAX_SESSION_MS      Cloudflare maximum session age (default: 1800000)
   CLOUDFLARE_KEEP_ALIVE_MS       Cloudflare inactivity backstop

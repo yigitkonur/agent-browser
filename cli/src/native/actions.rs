@@ -2875,6 +2875,7 @@ fn skip_launch_action(action: &str) -> bool {
             | "cloudflare_cleanup"
             | "cloudflare_profile_clone"
             | "cloudflare_profile_restore"
+            | "cloudflare_profile_clear_unknown"
             | "session_info"
             | "webmcp_result"
             | "webmcp_cancel"
@@ -2970,6 +2971,22 @@ pub async fn execute_command(cmd: &Value, state: &mut DaemonState) -> Value {
         .unwrap_or("")
         .to_string();
 
+    let cloudflare_requested = action.starts_with("cloudflare_")
+        || is_cloudflare_session(state)
+        || cmd
+            .get("provider")
+            .and_then(Value::as_str)
+            .is_some_and(|p| p.eq_ignore_ascii_case("cloudflare"))
+        || env::var("AGENT_BROWSER_PROVIDER").is_ok_and(|p| p.eq_ignore_ascii_case("cloudflare"));
+    if cloudflare_requested
+        && action != "close"
+        && cmd
+            .get("cloudflareSettings")
+            .is_some_and(|settings| !super::cloudflare_identity::matches_daemon(settings))
+    {
+        return error_response(&id, "Cloudflare settings differ from the running daemon. Close that session before changing account, credentials, profile, or mode.");
+    }
+
     if is_cloudflare_session(state)
         && (cmd.get("storageState").is_some() || cmd.get("restoreKey").is_some())
     {
@@ -3033,6 +3050,7 @@ pub async fn execute_command(cmd: &Value, state: &mut DaemonState) -> Value {
     if let Some(ref server) = state.stream_server {
         let mut broadcast_cmd;
         let has_internal_fields = cmd.get("plugins").is_some()
+            || cmd.get("cloudflareSettings").is_some()
             || cmd.get("pinTab").is_some()
             || cmd.get("restoreKey").is_some()
             || cmd.get("restoreSave").is_some()
@@ -3043,6 +3061,7 @@ pub async fn execute_command(cmd: &Value, state: &mut DaemonState) -> Value {
             broadcast_cmd = cmd.clone();
             if let Some(obj) = broadcast_cmd.as_object_mut() {
                 obj.remove("plugins");
+                obj.remove("cloudflareSettings");
                 obj.remove("pinTab");
                 obj.remove("restoreKey");
                 obj.remove("restoreSave");
@@ -3345,6 +3364,9 @@ pub async fn execute_command(cmd: &Value, state: &mut DaemonState) -> Value {
             super::cloudflare_profile::manage("restore", json!({"profile": cmd.get("profile")}))
                 .await
         }
+        "cloudflare_profile_clear_unknown" => providers::cloudflare_clear_profile_unknown(
+            cmd.get("confirm").and_then(Value::as_bool) == Some(true),
+        ),
         "title" => handle_title(state).await,
         "content" => handle_content(state).await,
         "evaluate" => handle_evaluate(cmd, state).await,
@@ -14492,6 +14514,134 @@ fn attach_tab_gone_data(resp: &mut Value, state: &DaemonState) {
 
 #[cfg(test)]
 mod tests {
+    /// Identical Cloudflare launches must reuse the attached context. The write
+    /// gate is deliberately closed so any attempt to create a provider fails.
+    #[tokio::test]
+    async fn repeated_cloudflare_launch_reuses_attached_browser_and_target() {
+        use futures_util::{SinkExt, StreamExt};
+        use tokio_tungstenite::tungstenite::Message;
+
+        let guard = crate::test_utils::EnvGuard::new(&[
+            "CLOUDFLARE_PROFILE_MODE",
+            "AGENT_BROWSER_SOCKET_DIR",
+            "XDG_RUNTIME_DIR",
+        ]);
+        let dir = tempfile::tempdir().unwrap();
+        guard.set("CLOUDFLARE_PROFILE_MODE", "write");
+        guard.set("AGENT_BROWSER_SOCKET_DIR", dir.path().to_str().unwrap());
+        guard.remove("XDG_RUNTIME_DIR");
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("ws://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut ws = tokio_tungstenite::accept_async(stream).await.unwrap();
+            let mut methods = Vec::new();
+            while let Ok(Some(message)) =
+                tokio::time::timeout(std::time::Duration::from_secs(10), ws.next()).await
+            {
+                let Ok(Message::Text(text)) = message else {
+                    break;
+                };
+                let command: serde_json::Value = serde_json::from_str(&text).unwrap();
+                let method = command["method"].as_str().unwrap();
+                let result = match method {
+                    "Target.getTargets" => serde_json::json!({"targetInfos": [{
+                        "targetId":"owned-target", "type":"page", "url":"about:blank",
+                        "title":"", "browserContextId":"profile-context"
+                    }]}),
+                    "Target.attachToTarget" => serde_json::json!({"sessionId":"owned-session"}),
+                    "Runtime.evaluate" => serde_json::json!({"result":{"type":"number","value":1}}),
+                    _ => serde_json::json!({}),
+                };
+                methods.push(method.to_string());
+                ws.send(Message::Text(
+                    serde_json::json!({"id": command["id"], "result":result}).to_string(),
+                ))
+                .await
+                .unwrap();
+            }
+            methods
+        });
+
+        let manager =
+            super::BrowserManager::connect_cdp_in_context(&url, None, "profile-context".into())
+                .await
+                .unwrap();
+        assert_eq!(manager.active_target_id().unwrap(), "owned-target");
+        let mut state = super::DaemonState::new();
+        state.session_name = None;
+        *state.domain_filter.write().await = None;
+        state.browser = Some(manager);
+        state.active_provider_connection = true;
+        let options = super::LaunchOptions {
+            executable_path: Some("mock-browser".into()),
+            proxy: Some("http://127.0.0.1:1".into()),
+            proxy_bypass: Some("localhost".into()),
+            proxy_username: Some("fixture-user".into()),
+            proxy_password: Some("fixture-password".into()),
+            ..Default::default()
+        };
+        state.launch_hash = Some(super::launch_hash(
+            &options,
+            &[],
+            &[],
+            &[],
+            &[],
+            Some("chrome"),
+            "provider",
+            Some("cloudflare"),
+        ));
+        let command = serde_json::json!({
+            "action":"launch", "provider":"cloudflare", "engine":"chrome",
+            "headless":true, "hideScrollbars":true, "webmcp":true, "webgpu":false,
+            "noXvfb":false, "clearCaCert":true, "enable":[], "initScripts":[],
+            "executablePath":"mock-browser", "proxy": {"server":"http://127.0.0.1:1", "bypass":"localhost", "username":"fixture-user", "password":"fixture-password"}
+        });
+        for _ in 0..2 {
+            let result = super::handle_launch(&command, &mut state).await.unwrap();
+            assert_eq!(result["reused"], true);
+            assert_eq!(
+                state.browser.as_ref().unwrap().active_target_id().unwrap(),
+                "owned-target"
+            );
+        }
+        state.browser.take().unwrap().close().await.unwrap();
+        let methods = server.await.unwrap();
+        assert_eq!(
+            methods
+                .iter()
+                .filter(|method| *method == "Browser.getVersion")
+                .count(),
+            2
+        );
+        assert!(!methods.iter().any(|method| method == "Target.createTarget"));
+    }
+    #[tokio::test]
+    async fn cloudflare_refuses_changed_client_settings_before_running_action() {
+        let mut state = super::DaemonState::new();
+        state.active_provider_session = Some(super::ActiveProviderSession {
+            session: super::providers::ProviderSession {
+                provider: "cloudflare".into(),
+                session_id: "owned".into(),
+            },
+            plugins: Vec::new(),
+        });
+        let result = super::execute_command(&serde_json::json!({"id":"test", "action":"session_info", "cloudflareSettings":{"profile":"different-fingerprint"}}), &mut state).await;
+        assert_eq!(result["success"], false);
+        assert!(result["error"]
+            .as_str()
+            .unwrap()
+            .contains("settings differ"));
+        assert!(!result.to_string().contains("different-fingerprint"));
+        state.active_provider_session = None;
+        let recovery = super::execute_command(&serde_json::json!({"id":"test", "action":"cloudflare_profile_clear_unknown", "confirm":true, "cloudflareSettings":{"profile":"different-fingerprint"}}), &mut state).await;
+        assert_eq!(recovery["success"], false);
+        assert!(recovery["error"]
+            .as_str()
+            .unwrap()
+            .contains("settings differ"));
+    }
     #[tokio::test]
     async fn cloudflare_rejects_generic_state_io() {
         let mut state = super::DaemonState::new();

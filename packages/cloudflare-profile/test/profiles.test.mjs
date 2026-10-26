@@ -12,6 +12,35 @@ const fixture = () => ({ cookies: [{ name: 'sid', value: 'secret', domain: 'exam
 function withHome(fn) { const home = mkdtempSync(join(tmpdir(), 'ab-cf-profile-')); return Promise.resolve().then(() => fn(home)).finally(() => rmSync(home, { recursive: true, force: true })); }
 const path = home => join(home, 'profiles', 'main', 'state.json');
 
+test('default opens the existing main profile without saving changes', () => withHome(async home => {
+  const store = new ProfileStore(home, 'main', 'seed');
+  store.acquire(); store.save(fixture()); store.release();
+  const before = readFileSync(path(home), 'utf8');
+  let restoredState;
+  const context = {
+    async newPage() { return {}; },
+    async newCDPSession() { return { async send() { return { targetInfo: { targetId: 't', browserContextId: 'c' } }; }, async detach() {} }; },
+    async storageState() { return fixture(); },
+    async close() {}
+  };
+  const chromium = { async connectOverCDP() { return { async newContext(options) { restoredState = options.storageState; return context; }, async close() {} }; } };
+  const companion = new Companion(chromium);
+  const opened = await companion.open({ wsUrl: 'wss://api.cloudflare.com/client/v4/accounts/a/browser-run/devtools/browser/s', token: 'token', sessionId: 's', home });
+  assert.equal(opened.profile, 'main');
+  assert.equal(opened.mode, 'read');
+  assert.deepEqual(restoredState, fixture());
+  await assert.rejects(companion.save(), error => error.code === 'PROFILE_SAVE_FAILED');
+  await companion.closeContext(); companion.release();
+  assert.equal(readFileSync(path(home), 'utf8'), before);
+}));
+
+test('default refuses to open a missing main profile instead of starting empty', () => withHome(async home => {
+  let connected = false;
+  const companion = new Companion({ async connectOverCDP() { connected = true; throw new Error('unexpected connection'); } });
+  await assert.rejects(companion.open({ wsUrl: 'wss://api.cloudflare.com/client/v4/accounts/a/browser-run/devtools/browser/s', token: 'token', sessionId: 's', home }), error => error.code === 'PROFILE_NOT_FOUND');
+  assert.equal(connected, false);
+}));
+
 test('plugin-compatible profile lock, metadata, backup and clone', () => withHome(home => {
   const first = new ProfileStore(home, 'main', 'session-1');
   first.acquire();

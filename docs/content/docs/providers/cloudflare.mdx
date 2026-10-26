@@ -12,19 +12,19 @@ Install this fork and its optional Playwright dependency. Set a Cloudflare accou
 ```bash
 export CLOUDFLARE_ACCOUNT_ID="your-account-id"
 export CLOUDFLARE_API_TOKEN="your-api-token"
-export CLOUDFLARE_PROFILE_MODE=none
-agent-browser -p cloudflare open https://example.com
+export AGENT_BROWSER_PROVIDER=cloudflare
+agent-browser open https://example.com
 agent-browser snapshot -i
 agent-browser close
 ```
 
-`AGENT_BROWSER_PROVIDER=cloudflare` selects the provider for subsequent commands. The Playwright companion is included in the npm package. In a source checkout, install dependencies with `pnpm install` and build the Rust CLI.
+When upgrading from an older build, close the existing session with the binary that started it before using this build. This ensures the daemon is running the new profile coordination code. `AGENT_BROWSER_PROVIDER=cloudflare` selects the provider for subsequent commands. The Playwright companion is included in the npm package. In a source checkout, install dependencies with `pnpm install` and build the Rust CLI.
 
 ## Profiles and compatibility gate
 
-The companion uses the existing Cloudflare plugin's profile directory and lock protocol. `CLOUDFLARE_PROFILE` selects the profile name, defaulting to `main`. `CLOUDFLARE_PROFILE_MODE=read` loads a saved profile without writing changes; `none` creates an empty context.
+By default, the companion loads the existing Cloudflare plugin's `main` profile in read-only mode. Commands use the `default` agent-browser session unless `--session` or `AGENT_BROWSER_SESSION` selects another. Use the same session name across all agents to reuse one live browser and its tabs. They share the active tab, so coordinate tab selection. Closing that session ends the browser for every agent using it. A different fork-owned session attempting to open the same profile is rejected instead of creating another browser; explicit `none` mode opts out of profile sharing. New logins, cookies, and other changes are not saved back after close, idle or maximum-age timeout, or disconnect. If `main` is missing, startup fails instead of silently using an empty browser. Set `CLOUDFLARE_PROFILE` to choose another saved profile; set `CLOUDFLARE_PROFILE_MODE=none` only when you explicitly want an empty context.
 
-The default `write` mode is currently disabled before session creation. Local Chrome context-sharing and storage tests do not establish Cloudflare compatibility. Write mode must remain disabled until an isolated live Cloudflare test proves both clients share the same context and cookies, local storage, and IndexedDB round-trip safely, and the two tools have a tested cross-process locking protocol that prevents stale takeover during writes. This protects existing profile files from partial overwrites.
+`write` mode is currently disabled before session creation. Local Chrome context-sharing and storage tests do not establish Cloudflare compatibility. Write mode must remain disabled until an isolated live Cloudflare test proves both clients share the same context and cookies, local storage, and IndexedDB round-trip safely, and the two tools have a tested cross-process locking protocol that prevents stale takeover during writes. This protects existing profile files from partial overwrites.
 
 ```bash
 agent-browser cloudflare profile clone main main-copy
@@ -50,3 +50,6 @@ The daemon closes its Cloudflare browser after five minutes of local inactivity 
 The daemon records only sessions it creates. If closure is unconfirmed, it preserves the record and reports an error. `agent-browser cloudflare sessions` lists owned records, and `agent-browser cloudflare cleanup` retries abandoned sessions. Automatic recovery conservatively skips records belonging to a live process; on non-Unix platforms it does not automatically recover abandoned records. If creation times out before a session ID is returned, inspect the Cloudflare dashboard before retrying.
 
 Generic `--allowed-domains` is disabled for Cloudflare until containment of all context targets is verified. A daemon restart cleans up owned sessions instead of restoring an in-progress handoff.
+
+
+If creation ends without a known session ID, the profile stays blocked so another browser cannot be allocated accidentally. Inspect the Cloudflare dashboard and close any orphaned browser. Only after confirming none remains, run `agent-browser cloudflare profile clear-unknown --confirm`; for a known session ID, retry `agent-browser close` in the owning session, or use `cloudflare cleanup` after its daemon exits. The fork's single-profile lease does not coordinate with browsers opened by the separate Cloudflare plugin. Shared-profile lease support currently requires Unix; on other platforms profile mode fails closed.

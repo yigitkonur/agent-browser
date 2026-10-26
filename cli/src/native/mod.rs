@@ -11,6 +11,8 @@ pub mod cdp;
 #[allow(dead_code)]
 pub mod cloudflare_handoff;
 #[allow(dead_code)]
+pub mod cloudflare_identity;
+#[allow(dead_code)]
 pub mod cloudflare_profile;
 #[allow(dead_code)]
 pub mod cookies;

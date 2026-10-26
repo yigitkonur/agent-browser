@@ -1403,9 +1403,10 @@ fn parse_command_inner(args: &[String], flags: &Flags) -> Result<Value, ParseErr
             ["cleanup"] => Ok(json!({"id": id, "action": "cloudflare_cleanup"})),
             ["profile", "clone", from, to] => Ok(json!({"id": id, "action": "cloudflare_profile_clone", "from": from, "to": to})),
             ["profile", "restore", profile] => Ok(json!({"id": id, "action": "cloudflare_profile_restore", "profile": profile})),
+            ["profile", "clear-unknown", "--confirm"] => Ok(json!({"id": id, "action": "cloudflare_profile_clear_unknown", "confirm": true})),
             _ => Err(ParseError::MissingArguments {
                 context: "cloudflare".to_string(),
-                usage: "cloudflare <live-view|handoff <instructions>|wait|sessions|cleanup|profile clone <from> <to>|profile restore <name>>",
+                usage: "cloudflare <live-view|handoff <instructions>|wait|sessions|cleanup|profile clone <from> <to>|profile restore <name>|profile clear-unknown --confirm>",
             }),
         },
 
@@ -3621,6 +3622,16 @@ mod tests {
             super::parse_command(&["cloudflare".into(), "handoff".into()], &default_flags())
                 .is_err()
         );
+        let mut clear = vec![
+            "cloudflare".into(),
+            "profile".into(),
+            "clear-unknown".into(),
+        ];
+        assert!(super::parse_command(&clear, &default_flags()).is_err());
+        clear.push("--confirm".into());
+        let parsed = super::parse_command(&clear, &default_flags()).unwrap();
+        assert_eq!(parsed["action"], "cloudflare_profile_clear_unknown");
+        assert_eq!(parsed["confirm"], true);
     }
     use super::*;
 

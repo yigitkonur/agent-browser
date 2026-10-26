@@ -1996,13 +1996,15 @@ This fork supports Cloudflare Browser Run as a managed CDP provider. Set `CLOUDF
 ```bash
 export CLOUDFLARE_ACCOUNT_ID="your-account-id"
 export CLOUDFLARE_API_TOKEN="your-api-token"
-export CLOUDFLARE_PROFILE_MODE=none
-agent-browser -p cloudflare open https://example.com
+export AGENT_BROWSER_PROVIDER=cloudflare
+agent-browser open https://example.com
 agent-browser cloudflare live-view
 agent-browser close
 ```
 
-The default shared profile write mode is deliberately disabled until a live Cloudflare compatibility test passes. Use `CLOUDFLARE_PROFILE_MODE=none` for an empty isolated context, or `read` with `CLOUDFLARE_PROFILE=main` to load an existing Cloudflare plugin profile without writing it. Node.js and the packaged Playwright dependency are required. See the [Cloudflare provider guide](docs/content/docs/providers/cloudflare.mdx) for lifecycle, handoff, and recovery details.
+By default, the browser loads the existing Cloudflare plugin profile `main` in read-only mode. Reuse the same agent-browser session while it is open to keep the live browser state. New logins and other changes are not saved back when the browser closes, times out, or disconnects: profile writes remain disabled pending live compatibility and cross-tool locking verification. If `main` is missing, the command fails rather than opening an empty browser. Set `CLOUDFLARE_PROFILE` to choose a different saved profile, or explicitly set `CLOUDFLARE_PROFILE_MODE=none` for an empty context. Node.js and the packaged Playwright dependency are required. See the [Cloudflare provider guide](docs/content/docs/providers/cloudflare.mdx) for lifecycle, handoff, and recovery details.
+
+Use the same `AGENT_BROWSER_SESSION` in each agent (the default is `default`) to share one live browser. Another fork-owned session cannot open `main` concurrently; it must reuse the existing session. Agents sharing a session also share the active tab. The separate Cloudflare plugin does not participate in this fork's session lease.
 
 ### Kernel
 

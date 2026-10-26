@@ -7,6 +7,9 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{env, fs, io::Write, path::PathBuf, time::Duration};
 
+#[path = "cloudflare_profile_lease.rs"]
+mod profile_lease;
+
 const API: &str = "https://api.cloudflare.com/client/v4/accounts";
 const DEADLINE: Duration = Duration::from_secs(15);
 const RECOVERY_DEADLINE: Duration = Duration::from_secs(10);
@@ -193,7 +196,8 @@ async fn close_at(
     }
     let endpoint = format!("{}/browser/{session}", base(account));
     close_remote(client, &endpoint, token, session).await?;
-    remove_journal(account, session)
+    remove_journal(account, session)?;
+    profile_lease::release(account, session)
 }
 
 async fn close_remote(
@@ -343,7 +347,11 @@ fn spawn_max_age_watchdog(
                     if let Err(error) = fs::remove_file(&record_path) {
                         if error.kind() != std::io::ErrorKind::NotFound {
                             eprintln!("Cloudflare session {session} closed but its ownership record could not be removed");
+                            return;
                         }
+                    }
+                    if let Err(error) = profile_lease::release(&account, &session) {
+                        eprintln!("Cloudflare profile lease could not be released: {error}");
                     }
                 }
             }
@@ -353,29 +361,93 @@ fn spawn_max_age_watchdog(
 }
 
 pub async fn connect() -> Result<ProviderConnection, String> {
-    crate::native::cloudflare_profile::validate_mode()?;
+    let mode = crate::native::cloudflare_profile::validate_mode()?;
     let (account, token) = credentials()?;
     let (idle_ms, max_ms) = idle_and_max()?;
     let keep_alive = keep_alive(idle_ms)?;
     let client = client()?;
+    let mut lease = profile_lease::acquire(&mode)?;
+    if let Some(profile_lease) = lease.as_mut() {
+        if let Err(error) = bounded_recovery(
+            profile_lease.recover(&client, &account, &token),
+            RECOVERY_DEADLINE,
+        )
+        .await
+        {
+            profile_lease::hold(&account, "recovery", lease.take());
+            return Err(error);
+        }
+    }
     bounded_recovery(recover(&client, &account, &token), RECOVERY_DEADLINE).await?;
     let acquisition_started = tokio::time::Instant::now();
-    let json = create_remote(
+    if let Some(lease) = lease.as_mut() {
+        lease.mark_pending(&account)?;
+    }
+    let result = create_remote(
         &client,
         &format!("{}/browser", base(&account)),
         &token,
         keep_alive,
     )
-    .await?;
-    let session = json
+    .await;
+    let json = match result {
+        Ok(json) => json,
+        Err(error) => {
+            // A 4xx response (except 408) is a definite refusal. A timeout,
+            // unreadable response, or server error could have created a
+            // browser, so keep the durable pending marker and OS lock.
+            let definitive = error.contains("(HTTP 4") && !error.contains("(HTTP 408");
+            if definitive {
+                if let Some(lease) = lease.as_mut() {
+                    lease.clear()?;
+                }
+            } else {
+                profile_lease::hold(&account, "unknown", lease.take());
+            }
+            return Err(error);
+        }
+    };
+    let session = match json
         .get("sessionId")
         .and_then(|v| v.as_str())
         .filter(|s| valid_session_id(s))
-        .ok_or(
-            "Cloudflare creation response lacks a valid session ID; check the Cloudflare dashboard",
-        )?;
+    {
+        Some(session) => session,
+        None => {
+            profile_lease::hold(&account, "unknown", lease.take());
+            return Err("Cloudflare creation response lacks a valid session ID; check the Cloudflare dashboard".into());
+        }
+    };
+    if let Some(profile_lease) = lease.as_mut() {
+        if let Err(error) = profile_lease.mark_session(&account, session) {
+            let cleanup = close_remote(
+                &client,
+                &format!("{}/browser/{session}", base(&account)),
+                &token,
+                session,
+            )
+            .await;
+            if cleanup.is_ok() {
+                let _ = profile_lease.clear();
+            } else {
+                profile_lease::hold(&account, "unknown", lease.take());
+            }
+            return Err(format!(
+                "{error}; session {session} cleanup {}",
+                if cleanup.is_ok() {
+                    "confirmed"
+                } else {
+                    "unconfirmed"
+                }
+            ));
+        }
+    }
+    profile_lease::hold(&account, session, lease.take());
     if let Err(e) = save_journal(&account, session) {
         let cleanup = close_at(&client, &account, &token, session).await;
+        if cleanup.is_err() {
+            profile_lease::mark_recovery(&account, session);
+        }
         return Err(format!(
             "{e}; session {session} cleanup: {}",
             cleanup.err().unwrap_or_else(|| "confirmed".into())
@@ -396,6 +468,9 @@ pub async fn connect() -> Result<ProviderConnection, String> {
         .filter(|ws| valid_ws_url(ws, &account, session));
     let Some(ws) = ws else {
         let cleanup = close_at(&client, &account, &token, session).await;
+        if cleanup.is_err() {
+            profile_lease::mark_recovery(&account, session);
+        }
         return Err(format!(
             "Cloudflare returned an invalid CDP URL for session {session}; cleanup: {}",
             cleanup.err().unwrap_or_else(|| "confirmed".into())
@@ -435,6 +510,12 @@ pub async fn close(session_id: &str) -> Result<(), String> {
     close_at(&client()?, &account, &token, session_id).await
 }
 
+pub(crate) fn clear_profile_unknown(confirm: bool) -> Result<serde_json::Value, String> {
+    let (account, _) = credentials()?;
+    profile_lease::clear_unknown(&account, confirm)?;
+    Ok(serde_json::json!({"cleared": true}))
+}
+
 /// Inspect only this account's local ownership records, without fetching or
 /// listing any unrelated account sessions.
 pub(crate) async fn status_owned() -> Result<serde_json::Value, String> {
@@ -455,6 +536,9 @@ pub(crate) async fn retry_owned() -> Result<serde_json::Value, String> {
     let client = client()?;
     let operation = async {
         let mut results = Vec::new();
+        if let Some(result) = profile_lease::retry_held(&client, &account, &token).await? {
+            results.push(serde_json::json!({"result": result}));
+        }
         for record in records {
             if process_alive(record.pid) {
                 results.push(serde_json::json!({"sessionId": record.session_id, "result": "owner is alive; skipped"}));

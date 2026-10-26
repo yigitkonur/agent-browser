@@ -103,6 +103,9 @@ impl ProfileCompanion {
                     .pointer("/error/code")
                     .and_then(Value::as_str)
                     .unwrap_or("COMPANION_FAILED");
+                if code == "PROFILE_NOT_FOUND" {
+                    return Err("Cloudflare profile was not found. Create the saved profile with cf-browser first, or explicitly set CLOUDFLARE_PROFILE_MODE=none for an empty browser".into());
+                }
                 return Err(format!("Cloudflare profile operation failed ({code})"));
             }
             Ok(response.get("result").cloned().unwrap_or(Value::Null))
@@ -137,7 +140,7 @@ pub async fn manage(method: &str, params: Value) -> Result<Value, String> {
 }
 
 pub fn validate_mode() -> Result<String, String> {
-    let mode = std::env::var("CLOUDFLARE_PROFILE_MODE").unwrap_or_else(|_| "write".into());
+    let mode = std::env::var("CLOUDFLARE_PROFILE_MODE").unwrap_or_else(|_| "read".into());
     if !matches!(mode.as_str(), "write" | "read" | "none") {
         return Err("CLOUDFLARE_PROFILE_MODE must be write, read, or none".into());
     }
@@ -146,4 +149,21 @@ pub fn validate_mode() -> Result<String, String> {
         return Err("Cloudflare shared-profile writes are disabled until live compatibility is verified; use CLOUDFLARE_PROFILE_MODE=read or none".into());
     }
     Ok(mode)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validate_mode;
+    use crate::test_utils::EnvGuard;
+
+    #[test]
+    fn default_uses_main_profile_in_read_mode_without_disabling_the_write_gate() {
+        let guard = EnvGuard::new(&["CLOUDFLARE_PROFILE_MODE"]);
+        guard.remove("CLOUDFLARE_PROFILE_MODE");
+        assert_eq!(validate_mode().unwrap(), "read");
+        guard.set("CLOUDFLARE_PROFILE_MODE", "none");
+        assert_eq!(validate_mode().unwrap(), "none");
+        guard.set("CLOUDFLARE_PROFILE_MODE", "write");
+        assert!(validate_mode().unwrap_err().contains("disabled"));
+    }
 }
